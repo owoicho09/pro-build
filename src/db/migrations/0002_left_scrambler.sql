@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "builds_one_active_per_project" ON "builds" USING btree ("project_id") WHERE "builds"."state" in ('queued', 'streaming');

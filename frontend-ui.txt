@@ -1,0 +1,964 @@
+We are now doing a FRONTEND/UI IMPLEMENTATION PASS for proBuild.
+
+The product architecture and backend behavior already exist and must be preserved.
+
+Your job in this phase is to redesign the frontend so it closely matches the approved visual direction:
+
+- clean modern SaaS application shell
+- strong left sidebar
+- blue/indigo primary accent
+- lots of white space
+- visually rich template cards
+- strong project thumbnails
+- refined cards and inputs
+- subtle shadows and borders
+- rounded corners
+- premium but restrained visual language
+- responsive desktop/tablet/mobile behavior
+- light/dark theme support
+
+This is not a conceptual redesign exercise.
+The visual direction is already decided.
+
+Do not change backend behavior unless required to support the UI.
+Do not rewrite working Supabase/v0/Vercel logic.
+
+==================================================
+1. OVERALL VISUAL DIRECTION
+==================================================
+
+The product should feel like a polished modern AI builder.
+
+Primary characteristics:
+
+- white/light neutral application canvas
+- subtle gray borders
+- soft card elevation
+- rounded corners
+- indigo/blue-purple accent
+- strong typography hierarchy
+- generous spacing
+- large visual cards
+- minimal clutter
+- restrained status badges
+- consistent iconography
+- strong preview imagery
+- polished hover/focus states
+- subtle transitions
+- no excessive gradients
+- no excessive glassmorphism
+- no random bright colors
+- no generic bootstrap/dashboard look
+
+The interface should feel visually closer to premium products such as modern AI builders and design tools, but remain distinctly proBuild.
+
+Do not copy another product pixel-for-pixel.
+
+==================================================
+2. BRANDING
+==================================================
+
+Use the proBuild logo asset already added to the project.
+
+If available at:
+
+public/logo.png
+
+use it as the primary product mark.
+
+The logo should replace text-only "proBuild" branding in primary app chrome where appropriate.
+
+Use:
+
+- sidebar top
+- mobile drawer
+- authentication
+- favicon/app icon where already configured
+- selected empty/brand states where subtle
+
+Do not overuse the logo.
+
+Sizing:
+- compact
+- clean
+- preserve aspect ratio
+- no distortion
+
+==================================================
+3. APPLICATION SHELL
+==================================================
+
+Use a permanent responsive application shell.
+
+DESKTOP:
+
+Left sidebar:
+~240px expanded
+~64–72px collapsed
+
+Main content fills remaining width.
+
+The sidebar should look visually substantial but not heavy.
+
+Use soft separators and strong spacing.
+
+Expanded layout:
+
+TOP
+- logo
+- collapse toggle
+
+PRIMARY
+- Create
+- Projects
+- Templates
+
+ACTIVITY
+- Active builds
+- Notifications
+
+ACCOUNT
+- Credits
+- Settings
+
+BOTTOM
+- user avatar/name/email
+- account menu
+- optional upgrade card if relevant to current plan
+
+Use proper section labels only in expanded state.
+
+COLLAPSED:
+- logo icon
+- navigation icons only
+- no truncated PRIMARY/ACTIVITY/ACCOUNT text
+- tooltips on hover/focus
+- active state clearly visible
+- user avatar at bottom
+- counts shown as small badges where useful
+
+WORKSPACE:
+- sidebar collapsed by default
+- user can expand it
+- preserve workspace width
+
+MOBILE:
+- no persistent sidebar
+- hamburger/menu button
+- left drawer
+- same navigation hierarchy
+- close on route selection
+- close on outside click
+- Escape closes
+- proper focus trapping
+
+==================================================
+4. CREATE PAGE
+==================================================
+
+The Create page should look polished and visually centered.
+
+Main content max-width should be approximately 1000–1100px.
+
+Top section:
+
+small eyebrow optional:
+"BUILD WITHOUT LIMITS"
+
+Main heading:
+"Create something amazing"
+
+Style:
+- strong typography
+- "amazing" may use primary accent
+- no giant marketing hero
+
+Supporting text:
+"Describe what you want to build. You can add images, files, or documents."
+
+MAIN COMPOSER
+
+Large card-like composer:
+- rounded ~16px
+- subtle border
+- soft shadow
+- generous padding
+- large text area
+- visually important
+
+Placeholder:
+"Describe what you want to build..."
+
+Footer inside composer:
+LEFT:
+- Attach files
+- supported attachment icons as appropriate
+
+CENTER/RIGHT:
+- keyboard hint:
+  Enter — Send
+  Shift + Enter — New line
+
+RIGHT:
+- prominent primary button:
+  Build project
+
+Button:
+- indigo/blue gradient or strong solid primary
+- icon
+- rounded
+- high contrast
+
+Do not let the composer feel like a plain textarea.
+
+==================================================
+5. EXAMPLE CHIPS
+==================================================
+
+Below composer:
+
+small label:
+EXAMPLES
+
+Use subtle rounded chips such as:
+
+- A restaurant website
+- A real estate agency
+- A blog or newsletter
+- A SaaS landing page
+
+Clicking a chip can insert the example into the composer.
+
+Keep these visually secondary.
+
+==================================================
+6. TEMPLATE SECTION
+==================================================
+
+Section header:
+
+Start with a template
+
+Right:
+Browse all →
+
+Template cards should be a strong visual feature.
+
+CARD STRUCTURE:
+
+- large image/preview at top
+- rounded outer card
+- screenshot aspect ratio around 16:9
+- title
+- category
+- concise description
+- small arrow/action button
+- subtle hover lift/border change
+
+Example cards:
+
+Meridian Estates
+Real Estate
+"A clean, modern real estate website for property listings and agents."
+
+Ember & Oak
+Restaurant
+"A warm, refined website for restaurants, with menu, reservations and more."
+
+Foundry Studio
+Portfolio
+"A bold, minimal portfolio for creatives, agencies and freelancers."
+
+Do not use blank gray cards.
+
+If screenshot/preview exists, always use it.
+
+If image unavailable:
+- use an intentional skeleton/fallback
+- never broken-image UI
+
+==================================================
+7. RECENT PROJECTS
+==================================================
+
+Below templates:
+
+Your projects
+small text:
+"Pick up where you left off."
+
+Right:
+View all →
+
+Use a responsive card row/grid.
+
+Each project card:
+
+- dominant preview screenshot
+- project name
+- small status badge
+- last updated text
+- optional overflow menu
+- hover state
+
+Examples of statuses:
+
+Live
+Draft
+Building
+Needs attention
+
+Do not show long descriptions on project cards.
+
+The visual preview should be the most important part.
+
+==================================================
+8. PROJECTS PAGE
+==================================================
+
+The Projects page should visually match the Create page.
+
+Use:
+
+- page heading
+- short subtitle
+- New project button
+- search/filter area if already implemented
+- responsive visual project grid
+
+Cards should be larger than the current implementation.
+
+Recommended:
+3–4 columns desktop
+2 columns tablet
+1 column mobile
+
+Each card:
+- screenshot
+- name
+- status
+- updated timestamp
+- optional menu
+
+Do not let one project appear as a tiny card in a huge empty page.
+
+==================================================
+9. TEMPLATE LIBRARY
+==================================================
+
+Use the same card visual system as Create.
+
+Top:
+
+Templates
+"Start with a professionally built project and make it yours."
+
+Search field
+
+Category filters/chips
+
+Grid of template cards.
+
+Template cards must feel like actual design assets.
+
+Use large preview imagery.
+
+==================================================
+10. TEMPLATE DETAIL
+==================================================
+
+Template detail should be visually strong.
+
+Top:
+- back button
+- template name
+- category
+- Use template button
+
+Main:
+large preview container
+
+Device controls:
+Desktop
+Tablet
+Mobile
+Open preview
+
+Below:
+- description
+- pages
+- features
+- relevant metadata
+
+Do not immediately generate from card click.
+The user should inspect the template first.
+
+==================================================
+11. WORKSPACE LAYOUT
+==================================================
+
+The Workspace must be visually redesigned.
+
+DESKTOP:
+
+Sidebar collapsed by default.
+
+Main workspace:
+
+top contextual header
+
+below:
+two-column split
+
+LEFT:
+Build / conversation
+~32–38%
+
+RIGHT:
+Preview
+~62–68%
+
+The preview must dominate the workspace.
+
+The divider should be draggable if existing architecture permits safely.
+
+Do not render the preview as a tiny narrow iframe in a huge unused canvas.
+
+==================================================
+12. WORKSPACE HEADER
+==================================================
+
+Keep it compact.
+
+LEFT:
+- back button
+- project name
+
+CENTER/STATUS:
+- Live
+- Building
+- Unpublished changes
+- Preview ready
+etc.
+
+RIGHT:
+- View live site if published
+- Publish / Publish update
+- More menu
+
+Remove permanent full-width domain-management bars from the main workspace.
+
+Domain configuration belongs under Project Settings / Domains or a compact contextual action.
+
+==================================================
+13. CONVERSATION PANEL
+==================================================
+
+The conversation panel should feel modern and spacious.
+
+Use:
+
+- generous padding
+- clear distinction between user and proBuild messages
+- rounded message blocks
+- good line-height
+- avoid excessive chat-bubble styling
+
+USER MESSAGE:
+- primary accent background
+- white text
+- compact width
+- right or visually distinct alignment
+
+PROBUILD MESSAGE:
+- light neutral card
+- dark text
+- no excessive branding
+
+Build activity should render as a structured status component, not raw text.
+
+The conversation panel should scroll independently.
+
+==================================================
+14. COMPOSER IN WORKSPACE
+==================================================
+
+Pin composer to bottom of conversation panel.
+
+Use a polished rounded container.
+
+Placeholder:
+"Describe the next change..."
+
+Support:
+- Enter sends
+- Shift+Enter newline
+- attachment button
+- send button
+
+The Send button should be compact and visually strong.
+
+Do not replace the button with "Sending..." while waiting on the entire backend operation.
+
+The message must appear instantly.
+
+==================================================
+15. PREVIEW PANEL
+==================================================
+
+The preview area should look intentional.
+
+Top preview toolbar:
+- Desktop
+- Tablet
+- Mobile
+- Open preview
+
+The preview canvas itself fills the available right-side area.
+
+DESKTOP:
+iframe fills most of canvas.
+
+TABLET:
+center a tablet-width viewport inside the larger preview canvas.
+
+MOBILE:
+center a phone-width viewport inside the larger preview canvas.
+
+Do not shrink the whole preview panel.
+
+Use subtle neutral background around smaller device previews.
+
+If preview exists:
+show it immediately.
+
+If no preview yet:
+use an intentional loading/empty state.
+
+==================================================
+16. PREVIEW EMPTY / LOADING STATE
+==================================================
+
+Use a visually polished state:
+
+"Building your site"
+
+"Your preview will appear here as soon as it's ready."
+
+Use:
+- subtle skeleton
+- soft animation
+- no fake percentage
+
+No huge blank white area.
+
+==================================================
+17. PREVIEW PERSISTENCE UI
+==================================================
+
+If project previously had a preview:
+show it when reopening.
+
+If a new build starts:
+keep old preview visible.
+
+Overlay or show subtle state:
+"Updating preview..."
+
+When newer preview becomes available:
+replace cleanly.
+
+Do not revert to empty preview unless the project genuinely never had one.
+
+==================================================
+18. ACTIVE BUILD STATE
+==================================================
+
+Use an inline structured card.
+
+Example:
+
+Building your project
+
+✓ Request received
+● Working on your project
+○ Preparing preview
+
+Use only states supported by actual backend behavior.
+
+Do not invent detailed internal steps.
+
+==================================================
+19. ERROR STATES
+==================================================
+
+Use calm, polished error cards.
+
+Example:
+
+"We couldn't complete those changes."
+
+"Your current project is safe."
+
+[ Retry ]
+
+Provider capacity:
+"proBuild is busy right now."
+
+"Your request is saved and can be retried."
+
+Never show:
+HTTP 429
+V0_API_ERROR
+raw stack traces
+provider implementation details
+
+==================================================
+20. PUBLISH UX
+==================================================
+
+Use a polished publish modal.
+
+Initial publish:
+
+Title:
+Publish your website
+
+Body:
+Your current version is ready to go live.
+
+Show destination URL.
+
+Primary:
+Publish website
+
+After success:
+
+Your website is live
+
+buttons:
+Open site
+Copy link
+
+Secondary:
+Connect domain
+
+If already published and preview changed:
+
+Publish latest changes?
+
+Current live version
+New version
+
+Publish update
+
+If public verification succeeds:
+do not show speculative warning text.
+
+==================================================
+21. SIDEBAR VISUAL DETAILS
+==================================================
+
+Sidebar background:
+very light neutral / subtle tint.
+
+Active item:
+- soft indigo background
+- strong indigo text/icon
+
+Hover:
+- subtle gray/indigo tint
+
+Section separators:
+light gray
+
+Icons:
+consistent outline icon library
+
+Do not use emoji.
+
+Use small badges for:
+- notifications
+- active builds
+
+User card:
+avatar
+name
+email
+overflow menu
+
+Optional upgrade card:
+small
+restrained
+soft indigo background
+not visually dominant
+
+==================================================
+22. DARK MODE
+==================================================
+
+Create a real dark mode.
+
+Do not simply invert colors.
+
+Dark mode should use:
+- near-black/charcoal surfaces
+- slightly lighter cards
+- subtle borders
+- indigo accent preserved
+- readable muted text
+- clean contrast
+
+All surfaces:
+Create
+Projects
+Templates
+Template detail
+Workspace
+Dialogs
+Settings
+Sidebar
+
+must look intentional.
+
+==================================================
+23. TYPOGRAPHY
+==================================================
+
+Use the existing font stack unless there is a compelling reason to change it.
+
+Use:
+- strong heading hierarchy
+- medium/semi-bold titles
+- readable body text
+- muted secondary text
+- small uppercase section labels sparingly
+
+Avoid tiny text.
+
+The current interface is visually too small in places.
+
+Increase readable sizing where appropriate.
+
+==================================================
+24. SPACING SYSTEM
+==================================================
+
+Standardize spacing.
+
+Recommended:
+4 / 8 / 12 / 16 / 24 / 32 / 48 / 64
+
+Avoid arbitrary margins everywhere.
+
+Pages should feel breathable but not empty.
+
+==================================================
+25. BORDER RADIUS
+==================================================
+
+Use a consistent radius system.
+
+Suggested:
+inputs/buttons: 10–12px
+cards: 14–16px
+large containers: 18–20px
+
+Avoid excessive pill shapes except:
+- chips
+- status badges
+- compact buttons
+
+==================================================
+26. SHADOWS
+==================================================
+
+Use shadows sparingly.
+
+Cards:
+very soft elevation.
+
+Composer:
+slightly stronger elevation.
+
+Dialogs:
+appropriate elevation.
+
+Do not create floating/glowing cards everywhere.
+
+==================================================
+27. RESPONSIVENESS
+==================================================
+
+DESKTOP:
+sidebar + full content
+
+TABLET:
+collapsed rail or compact sidebar
+responsive content grid
+
+MOBILE:
+drawer
+single-column content
+large touch targets
+template/project cards full-width
+Build | Preview workspace tabs
+
+Do not allow:
+- clipped text
+- horizontal overflow
+- tiny preview
+- unusable modals
+- off-screen buttons
+
+==================================================
+28. ACCESSIBILITY
+==================================================
+
+Maintain:
+- semantic buttons
+- keyboard focus
+- visible focus states
+- accessible dialogs
+- tooltip accessibility
+- proper contrast
+- aria labels where needed
+- Escape handling
+- reduced motion support
+
+==================================================
+29. KEEP CURRENT FUNCTIONALITY
+==================================================
+
+Do not regress:
+
+- Supabase auth
+- prompt persistence
+- project creation
+- v0 build creation
+- persistent conversations
+- optimistic messages
+- attachments
+- preview
+- publish
+- credits
+- notifications
+- project persistence
+- templates
+- dark/light/system
+- mobile
+- domains
+- integrations
+- rate-limit handling
+
+This is primarily a frontend implementation and polish pass.
+
+==================================================
+30. COMPONENT SYSTEM
+==================================================
+
+Before implementing, identify reusable components such as:
+
+AppShell
+Sidebar
+SidebarItem
+MobileDrawer
+PageHeader
+Composer
+TemplateCard
+ProjectCard
+StatusBadge
+BuildStatus
+PreviewToolbar
+PreviewCanvas
+Message
+NotificationPopover
+CreditIndicator
+UserMenu
+PublishModal
+EmptyState
+ErrorState
+LoadingSkeleton
+
+Avoid duplicating layout logic.
+
+==================================================
+31. IMPLEMENTATION ORDER
+==================================================
+
+Implement in this order:
+
+1. visual tokens / theme
+2. sidebar/app shell
+3. Create page
+4. template cards/section
+5. project cards/section
+6. Projects page
+7. Templates page
+8. Template detail
+9. Workspace header
+10. conversation panel
+11. workspace composer
+12. preview panel
+13. publish modal
+14. mobile responsive behavior
+15. dark mode polish
+16. accessibility polish
+
+Do not do one-off styling.
+Build the shared design system first.
+
+==================================================
+32. VERIFICATION
+==================================================
+
+After implementation:
+
+Run:
+pnpm typecheck
+pnpm lint
+pnpm build
+
+Then manually inspect or provide a checklist for:
+
+- desktop expanded sidebar
+- desktop collapsed sidebar
+- tablet
+- mobile drawer
+- Create page
+- Templates
+- Projects
+- Workspace
+- preview desktop/tablet/mobile
+- dark mode
+- publish modal
+- empty states
+- loading states
+- error states
+
+==================================================
+33. DEFINITION OF DONE
+==================================================
+
+The UI should feel visually consistent with the approved design direction:
+
+- premium
+- clean
+- modern
+- spacious
+- visual
+- easy to scan
+- visually rich templates/projects
+- strong sidebar
+- clear actions
+- polished workspace
+- responsive
+- good dark mode
+
+The current interface should no longer look like a basic functional prototype.
+
+It should look like a real polished product ready for external users.
+
+START BY AUDITING THE EXISTING FRONTEND COMPONENTS AND LAYOUT.
+
+Then implement the redesign systematically while preserving all working backend behavior.

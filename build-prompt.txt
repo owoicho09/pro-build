@@ -1,0 +1,2521 @@
+You are building a production-oriented SaaS product from the ground up called proBuild
+
+Do not begin implementation immediately.
+
+Your first responsibility is to understand the product, inspect the available APIs/SDKs and environment, identify assumptions, design the system, and produce an implementation plan. Only after the architecture is coherent and the important external capabilities have been verified should you begin implementation.
+
+You have autonomy over implementation details. Do not mechanically follow assumptions in this document when current SDK/API behavior proves otherwise. Verify current APIs from official documentation/packages where possible and adapt the implementation while preserving the intended product experience.
+
+The goal is not to produce a prototype that merely looks correct.
+
+The goal is to build the functional foundation of a real product and test the complete user journey.
+
+---
+
+# 1. PRODUCT VISION
+
+We are building an AI-powered software-building platform for nontechnical users.
+
+Think about the experience created by products such as v0 and Lovable, but our product extends beyond initial generation.
+
+The platform should allow a person with little or no technical knowledge to:
+
+1. Describe a software idea naturally.
+2. Upload supporting files, images, screenshots, documents, logos, assets, etc.
+3. Have the system understand what they are trying to build.
+4. Reason about the product before coding when the request requires it.
+5. Build the actual application.
+6. Show the application in a live preview.
+7. Allow the user to continue modifying the same application through natural-language requests.
+8. Handle uploaded assets intelligently during later changes.
+9. Identify external integrations/credentials that the application requires without stopping the rest of the build.
+10. Publish the completed application.
+11. Host/manage the production application.
+12. Connect or eventually purchase/manage domains.
+13. Allow the user to leave and return days or months later.
+14. Continue developing the exact same project.
+15. Publish new versions without unnecessarily disrupting the existing production version.
+
+The relationship should feel like:
+
+> Claude Code / v0 / Lovable for someone who does not know how to use a terminal, Git, deployment systems, environment files or DNS.
+
+The user thinks about their **product**, not infrastructure.
+
+The core lifecycle is:
+
+IDEA
+→ UNDERSTAND
+→ PLAN WHEN NECESSARY
+→ BUILD
+→ VERIFY
+→ PREVIEW
+→ MODIFY
+→ PUBLISH
+→ DOMAIN
+→ MANAGE
+→ RETURN LATER
+→ MODIFY AGAIN
+→ REPUBLISH
+
+A project is not a disposable generation.
+
+It is a persistent software product.
+
+---
+
+# 2. IMPORTANT PRODUCT PRINCIPLE
+
+We are NOT building a coding engine from scratch if v0 Platform API already provides the capability.
+
+The initial builder engine should use the current v0 Platform API wherever appropriate.
+
+v0 should potentially handle things such as:
+
+* application generation
+* project/chat continuity
+* generated files
+* code context
+* file/image attachments
+* live previews
+* continued modifications
+* error repair capabilities
+* Vercel project/deployment integration
+
+Do not recreate these systems unnecessarily.
+
+However, do not tightly couple the entire business domain to v0.
+
+Create a sensible builder/provider abstraction so that another engine could theoretically be introduced later without rewriting the entire SaaS.
+
+For example, conceptually there may be a BuilderEngine/service boundary capable of operations such as:
+
+* create project/build session
+* send build/change request
+* provide attachments/context
+* retrieve project/build state
+* retrieve preview
+* continue an existing project
+* retrieve generated artifacts/files where supported
+* publish/deploy where supported
+
+These are conceptual responsibilities, NOT mandatory method names.
+
+Use the actual current v0 API/SDK rather than inventing endpoints based on this prompt.
+
+V1 should use v0.
+
+Future possibilities might include Claude Code, Codex, Vercel Sandbox or another builder.
+
+Do NOT implement those alternative engines now.
+
+---
+
+# 3. BEFORE YOU WRITE CODE — THE 10 REQUIRED CHECKS
+
+Before implementation, perform these ten checks.
+
+Document your findings and use them to create the implementation plan.
+
+## CHECK 1 — Understand the product
+
+Restate internally and in the implementation plan:
+
+* who the user is
+* what problem the platform solves
+* what the user should experience
+* what our platform owns
+* what v0 owns
+* what Vercel owns
+* what external generated-project services own
+
+Do not proceed with an architecture that confuses these boundaries.
+
+---
+
+## CHECK 2 — Inspect the current v0 Platform API
+
+Verify the actual current API/SDK rather than relying solely on this prompt.
+
+Determine the supported mechanisms for:
+
+* authentication
+* projects
+* chats
+* messages
+* continuing existing chats
+* attachments
+* source files
+* generated files
+* previews
+* deployments
+* Git/GitHub if exposed
+* environment variables/integrations if exposed
+* usage information if exposed
+* error responses
+* rate limits if documented
+* model selection if exposed
+
+Do not invent unsupported v0 capabilities.
+
+If something is unavailable, design an appropriate application-level alternative.
+
+---
+
+## CHECK 3 — Verify persistence
+
+Determine exactly which IDs/resources must be stored so that a user can:
+
+create a project today,
+
+close the browser,
+
+return later,
+
+open that same project,
+
+see its previous state,
+
+and request another modification.
+
+Persistence is a fundamental product requirement.
+
+Our database should maintain whatever mappings are necessary between our project and external resources.
+
+---
+
+## CHECK 4 — Verify attachments
+
+Determine how the current builder accepts:
+
+* images
+* screenshots
+* PDFs
+* documents
+* text files
+* source files
+* other supported attachments
+
+The user must be able to do things such as:
+
+> Use this image in the hero section.
+
+> This is our logo. Use it throughout the application.
+
+> Read this company document and use the information to build the website.
+
+> Make this section resemble this screenshot.
+
+Attachments must be associated with the correct project/message and actually made available to the builder.
+
+Do not implement a fake upload interface where the builder cannot access the uploaded content.
+
+---
+
+## CHECK 5 — Verify preview/build behavior
+
+Understand:
+
+* how previews are created
+* how preview URLs are obtained
+* how updates affect previews
+* how build/generation status can be observed
+* what happens when generation fails
+* whether generation is synchronous, streamed or asynchronous
+* how the UI should recover from interrupted requests
+
+The browser should not need to remain open for the conceptual project state to survive.
+
+If the external API requires application-level background processing, implement an appropriate durable mechanism.
+
+Do not create unnecessary infrastructure if the current API already solves this.
+
+---
+
+## CHECK 6 — Verify deployment and Vercel ownership
+
+Understand how an application generated through v0 becomes a Vercel deployment.
+
+Determine:
+
+* which Vercel account/team owns it
+* how Vercel project IDs are obtained
+* preview vs production deployment behavior
+* environment variables
+* deployment status
+* production URL
+* redeployment
+* rollback/version possibilities
+* custom domain assignment
+
+Production should be treated separately from an experimental working preview.
+
+A failed future edit must not automatically destroy a previously working production deployment.
+
+---
+
+## CHECK 7 — Verify domains
+
+Inspect current Vercel domain APIs.
+
+Determine what V1 can realistically support for:
+
+* connecting an existing domain
+* DNS verification
+* domain status
+* domain assignment to a project
+* domain search
+* availability
+* pricing
+* purchase
+* renewals
+* ownership/registrant requirements
+
+Connecting existing domains is required if supported.
+
+Domain purchasing should only be implemented if the current API and commercial/legal model are sufficiently clear.
+
+If purchasing is not safe to implement yet, architect for it and ship connection first.
+
+Do not invent domain registrar behavior.
+
+---
+
+## CHECK 8 — Verify usage and billing information
+
+Understand what usage information v0 actually exposes.
+
+We need to meter our customers independently from v0's own consumer-facing plans.
+
+The platform should eventually support:
+
+* free allowance
+* paid plans
+* project limits
+* build-credit limits
+* additional credit purchases
+* abuse prevention
+* per-user usage
+* per-project usage
+* platform-wide spending protection
+
+If exact v0 dollar/token usage is exposed, use it where appropriate.
+
+If not, create a robust metering abstraction that can use available usage information without pretending unavailable data exists.
+
+Pricing/allowances must be configurable rather than scattered as constants throughout the codebase.
+
+---
+
+## CHECK 9 — Security and credentials
+
+Design the security boundary before implementation.
+
+Separate:
+
+PLATFORM CREDENTIALS
+
+from:
+
+CUSTOMER PROJECT CREDENTIALS.
+
+Platform credentials may include:
+
+* v0
+* Vercel
+* Supabase
+* GitHub
+* payment provider
+* email provider
+* rate-limit infrastructure
+
+Generated projects may independently require:
+
+* Supabase
+* Paystack
+* Stripe
+* OpenAI
+* ElevenLabs
+* Twilio
+* Meta
+* Google
+* AWS
+* Cloudinary
+* arbitrary external APIs
+
+Never expose platform secrets to generated projects.
+
+Never expose another project's secrets to a project.
+
+Sensitive customer credentials should not unnecessarily appear in AI prompts, logs or client-side responses.
+
+Prefer injecting project secrets into appropriate deployment/environment-variable systems.
+
+---
+
+## CHECK 10 — Define and test the complete journey
+
+Before considering the product complete, define an acceptance test representing an actual nontechnical user.
+
+Do not test only isolated APIs/components.
+
+Test the full journey described later in this specification.
+
+---
+
+# 4. PLATFORM RESPONSIBILITIES
+
+Our platform should primarily own:
+
+## Identity
+
+* signup
+* login
+* logout
+* account
+* session management
+
+## Projects
+
+* create project
+* project dashboard
+* persistent project identity
+* project metadata
+* status
+* builder resource mappings
+* production information
+* preview information
+* usage
+* integrations
+* attachments
+* deployment information
+* domains
+
+## Product interaction
+
+* initial idea entry
+* intelligent planning when necessary
+* natural-language build requests
+* natural-language modification requests
+* attachments
+* build progress
+* results
+* actionable errors
+
+## Builder orchestration
+
+* communication with v0
+* external project/chat IDs
+* continuation
+* preview
+* status
+* failure handling
+
+## Usage
+
+* build credits
+* project limits
+* rate limits
+* plan limits
+* usage ledger
+
+## Integrations
+
+* identify missing external configuration
+* explain what the user needs
+* collect/store credentials securely where appropriate
+* configure project/deployment environment
+* allow the builder to finish/verify integrations
+
+## Deployment
+
+* preview
+* publish
+* production state
+* deployment history
+* safe updates
+
+## Domains
+
+* connect
+* status
+* DNS instructions when needed
+* eventually search/purchase/manage where safe
+
+---
+
+# 5. WHAT THE PLATFORM MUST NOT BECOME
+
+Do not build a proprietary runtime that generated applications depend upon unless absolutely necessary.
+
+Generated applications should remain normal software.
+
+They may use:
+
+* Next.js
+* React
+* Node
+* Python
+* Supabase
+* PostgreSQL
+* Stripe
+* Paystack
+* OpenAI
+* Twilio
+* ElevenLabs
+* arbitrary APIs/packages
+
+as appropriate.
+
+Do not force every generated application into one database architecture.
+
+Do not create shared Supabase schemas for customer-generated projects.
+
+Do not attempt to build replacements for every third-party SaaS.
+
+Our product simplifies:
+
+BUILDING
+PREVIEWING
+DEPLOYING
+HOSTING
+MANAGING
+MODIFYING
+
+software.
+
+It does not replace the entire internet infrastructure ecosystem.
+
+---
+
+# 6. PLANNING EXPERIENCE
+
+Do not force every user through a long questionnaire.
+
+The system should distinguish between requests that are sufficiently clear and requests where important product decisions are missing.
+
+Example:
+
+> Build a professional portfolio website for a wedding photographer. Here is her logo and photos.
+
+This probably requires little planning.
+
+But:
+
+> Build an Uber-like logistics marketplace.
+
+requires significantly more reasoning.
+
+The planning experience should infer obvious requirements and only ask questions whose answers materially affect the product.
+
+The user should never feel like they are filling out a 40-question software requirements form.
+
+Where appropriate, produce a concise build understanding such as:
+
+WHAT WE'RE BUILDING
+
+USERS
+
+CORE FEATURES
+
+IMPORTANT WORKFLOWS
+
+INTEGRATIONS
+
+IMPORTANT ASSUMPTIONS
+
+Then allow the build to proceed.
+
+Planning must help the user.
+
+It must not become friction.
+
+---
+
+# 7. PROJECT CREATION EXPERIENCE
+
+A new project should begin simply.
+
+Possible experience:
+
+"What do you want to build?"
+
+Large natural-language input.
+
+Attachment button.
+
+Examples may be shown, but do not make the UI noisy.
+
+User can provide:
+
+* prompt
+* image
+* logo
+* screenshot
+* document
+* source/context
+
+After understanding/planning:
+
+BUILD PROJECT
+
+The user should then enter the persistent project workspace.
+
+---
+
+# 8. PROJECT WORKSPACE
+
+The core workspace should feel focused.
+
+Think:
+
+LEFT:
+conversation/build activity
+
+RIGHT:
+working application preview
+
+Do not overload the user with developer terminology.
+
+Potential navigation:
+
+Project
+Integrations
+Deployments / Versions
+Domain
+Settings
+
+GitHub/source-code information can exist but should not dominate the nontechnical experience.
+
+The user should be able to type:
+
+> Make the hero less crowded.
+
+> Use this image instead.
+
+> Add a booking flow.
+
+> The mobile menu isn't working.
+
+> Add Paystack payments.
+
+> Change the pricing to ₦50,000.
+
+and the platform should continue modifying the same application.
+
+---
+
+# 9. ATTACHMENT EXPERIENCE
+
+Attachments are first-class project context.
+
+A message may contain:
+
+TEXT + ONE OR MORE ATTACHMENTS.
+
+Examples:
+
+"Use this as the hero."
+
+[hero.jpg]
+
+"Use this logo and these property photos."
+
+[logo.png]
+[property-1.jpg]
+[property-2.jpg]
+
+"Build the company website from this information."
+
+[company-profile.pdf]
+
+Store sufficient metadata to understand:
+
+* owner
+* project
+* message
+* type
+* name
+* storage/reference location
+* builder attachment/reference if applicable
+
+Never silently discard attachments.
+
+If a file type cannot be understood by the builder, tell the user rather than pretending it was used.
+
+---
+
+# 10. BUILD BEHAVIOR
+
+A build should feel like a coherent operation rather than a collection of API calls.
+
+Potential states:
+
+DRAFT
+
+PLANNING
+
+READY_TO_BUILD
+
+BUILDING
+
+VERIFYING
+
+PREVIEW_READY
+
+CHANGES_REQUESTED
+
+BUILDING
+
+PREVIEW_READY
+
+READY_TO_PUBLISH
+
+DEPLOYING
+
+LIVE
+
+FAILED
+
+NEEDS_ATTENTION
+
+Do not treat this exact enum as mandatory if the architecture suggests something better.
+
+The important requirement is that state transitions are explicit and recoverable.
+
+A build failure must not corrupt the entire project.
+
+---
+
+# 11. CRITICAL RULE: MISSING CREDENTIALS MUST NOT STOP THE BUILD
+
+This is fundamental.
+
+Suppose the user asks:
+
+> Build a booking platform with Paystack payments.
+
+and no Paystack credentials exist.
+
+DO NOT stop halfway and leave the application unfinished.
+
+Build everything possible:
+
+* payment UI
+* server/API structure
+* success flow
+* failure flow
+* database fields
+* webhook route
+* environment-variable references
+* error states
+* integration layer
+* appropriate mock/demo state if needed
+
+The project should reach a usable preview.
+
+Record that real Paystack functionality still needs activation.
+
+Example:
+
+PROJECT READY
+
+1 FEATURE NEEDS ACTIVATION
+
+Paystack
+Required to process real payments.
+
+[Connect Paystack]
+
+The same principle applies to:
+
+Supabase
+Stripe
+OpenAI
+ElevenLabs
+Twilio
+Meta
+Google
+etc.
+
+A missing external credential disables the dependent live capability.
+
+It should NOT prevent unrelated parts of the application from being completed.
+
+---
+
+# 12. PROJECT INTEGRATIONS / SECRETS
+
+Create a generic integration/secret architecture rather than hardcoding every provider.
+
+A project may have requirements such as:
+
+Provider:
+Paystack
+
+Required variables:
+PAYSTACK_SECRET_KEY
+NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY
+
+Status:
+NOT_CONFIGURED
+
+The UI should explain:
+
+* what is required
+* why it is required
+* where the user can obtain it
+* which feature depends on it
+
+The user can securely supply the value.
+
+Do not display secret values again unnecessarily.
+
+After configuration, the platform should configure the correct project environment.
+
+Then the builder can be asked to:
+
+* finish real integration
+* remove mocks if applicable
+* verify behavior
+* rebuild preview
+
+Provider-specific OAuth can be added later.
+
+Do not build twenty OAuth integrations for V1.
+
+---
+
+# 13. PROJECT CONTINUITY
+
+This is one of the most important features.
+
+A user must be able to:
+
+build something Monday,
+
+publish it,
+
+leave,
+
+return two months later,
+
+open Projects,
+
+select the project,
+
+and say:
+
+> Add appointment scheduling.
+
+The system must understand that this refers to the existing application.
+
+It must continue the appropriate v0 project/chat or provide the necessary existing project context.
+
+Do not create a new disconnected application for every modification.
+
+---
+
+# 14. PREVIEW VS PRODUCTION
+
+Treat these as different concepts.
+
+PREVIEW:
+
+the current working version being generated/modified.
+
+PRODUCTION:
+
+the version publicly available to users.
+
+If the production site currently works and the user requests:
+
+> Redesign the dashboard.
+
+the existing production site should remain available while the new version is being worked on.
+
+Only after the new version is ready should it replace production.
+
+Conceptually:
+
+LIVE VERSION
+↓
+USER REQUESTS CHANGE
+↓
+WORKING/PREVIEW VERSION
+↓
+VERIFY
+↓
+USER APPROVES/PUBLISHES
+↓
+NEW PRODUCTION VERSION
+
+Use the actual v0/Vercel mechanisms available to achieve this safely.
+
+---
+
+# 15. PUBLISH
+
+The user should not need to understand Vercel.
+
+They see:
+
+PUBLISH
+
+The platform handles the underlying deployment.
+
+Show useful states:
+
+Preparing deployment
+
+Deploying
+
+Deployment successful
+
+Live
+
+If deployment fails:
+
+Deployment failed
+
+and give a meaningful explanation/retry mechanism.
+
+Store deployment identifiers and URLs.
+
+---
+
+# 16. DOMAINS
+
+A project should support:
+
+Default platform/Vercel URL.
+
+Existing custom domain connection.
+
+Where current APIs make it safe:
+
+domain search
+
+domain availability
+
+domain price
+
+purchase
+
+renewal information
+
+connection
+
+Do not expose DNS complexity unnecessarily.
+
+When manual DNS action is unavoidable, provide exact instructions.
+
+A domain may logically belong to the user's account and be assigned to a project rather than being inseparable from the project record.
+
+Do not implement speculative domain resale markup until commercial behavior is confirmed.
+
+---
+
+# 17. GITHUB / SOURCE PORTABILITY
+
+Where current v0/GitHub capabilities support it, preserve source portability.
+
+Ideally a project has or can have a GitHub repository.
+
+Users should not be trapped in proprietary generated output.
+
+However:
+
+GitHub should not dominate the UI.
+
+A nontechnical user does not need to understand branches, commits or pull requests to publish a simple change.
+
+Use technical versioning underneath while presenting:
+
+Version
+
+Preview
+
+Published
+
+Restore
+
+where appropriate.
+
+---
+
+# 18. PLATFORM DATABASE
+
+Use a proper relational model.
+
+Supabase is expected for the platform's own authentication/database unless current implementation constraints suggest otherwise.
+
+Conceptually expect entities around:
+
+users/profiles
+
+projects
+
+project_members if collaboration architecture warrants it
+
+conversations/messages
+
+attachments
+
+builder_resources
+
+builds/generations
+
+deployments
+
+domains
+
+project_integrations
+
+project_secret_metadata
+
+usage_events
+
+credit_ledger
+
+subscriptions
+
+plans
+
+transactions
+
+notifications
+
+Do not blindly create every table listed.
+
+Design the normalized schema based on actual responsibilities.
+
+Important relationships must be explicit.
+
+External IDs such as:
+
+v0 project
+
+v0 chat
+
+Vercel project
+
+deployment
+
+GitHub repo
+
+must be persistently mapped.
+
+Use proper authorization/RLS.
+
+A user must never be able to retrieve another user's projects, attachments, credentials or usage.
+
+---
+
+# 19. BUILD CREDIT SYSTEM
+
+Do not expose raw tokens as the primary customer experience.
+
+Use an internal Build Credit system.
+
+The architecture must support configurable conversion between external builder usage and customer credits.
+
+Conceptual starting point:
+
+100 Build Credits ~= $1 of builder allowance.
+
+This is NOT a permanently hardcoded economic rule.
+
+It must be configurable.
+
+Track usage through a ledger.
+
+Every charge should be attributable to:
+
+user
+
+project
+
+build/change
+
+timestamp
+
+provider
+
+provider usage if available
+
+credit amount
+
+reason/type
+
+Do not simply maintain one mutable integer with no audit history.
+
+Maintain a ledger and derive/cache balances safely.
+
+---
+
+# 20. INITIAL PLAN CONCEPTS
+
+Pricing must be configuration-driven.
+
+Initial product concepts for development/testing:
+
+FREE
+
+* 1 project
+* small build-credit allowance
+* limited generation velocity
+* preview
+* basic publishing
+* attachments
+
+BUILDER
+
+Conceptual target around $19/month.
+
+* more credits
+* around 3 active projects
+* ongoing modifications
+* custom domains
+* additional credit purchases
+* versions/deployments
+
+PRO
+
+Conceptual target around $49/month.
+
+* larger credit allowance
+* around 10 projects
+* higher rate limits
+* more usage
+* additional project-management capabilities
+
+Do NOT treat these numbers as immutable production pricing.
+
+The architecture should let an administrator modify:
+
+price
+
+included credits
+
+project count
+
+rate limits
+
+feature flags
+
+without rewriting business logic.
+
+We need real usage data before final economics are locked.
+
+---
+
+# 21. FREE USER ECONOMICS
+
+Free users consume real infrastructure.
+
+Protect the platform.
+
+Free access should have:
+
+* limited projects
+* limited build credits
+* velocity rate limits
+* sensible attachment limits
+* abuse protection
+
+The goal of Free is:
+
+let someone successfully experience building a real application.
+
+It is NOT:
+
+provide unlimited free AI software development.
+
+---
+
+# 22. RATE LIMITING
+
+Implement rate limiting separately from credit limits.
+
+Credits protect economics.
+
+Rate limits protect infrastructure and abuse.
+
+Consider limits at:
+
+user
+
+IP
+
+project
+
+and potentially global/provider level.
+
+Prevent accidental duplicate submissions.
+
+Initially prevent multiple conflicting builds against the same project unless the external builder explicitly supports safe concurrency.
+
+Limits must be configurable by plan.
+
+---
+
+# 23. GLOBAL SPEND PROTECTION
+
+Architect for platform-wide usage protection.
+
+We should be able to define thresholds such as:
+
+warning
+
+critical
+
+hard free-tier pause
+
+Do not allow an accidental loop or malicious user to create uncontrolled provider spend.
+
+Admin/internal visibility should eventually show:
+
+total builder usage
+
+usage today
+
+usage this month
+
+usage by user
+
+usage by project
+
+largest consumers
+
+failed generations
+
+credit liability
+
+This does not need to become a massive admin analytics product in V1, but the underlying usage data must exist.
+
+---
+
+# 24. BILLING
+
+Use an abstraction for platform subscription billing.
+
+The initial implementation may use Paystack where appropriate.
+
+The billing architecture should support:
+
+plans
+
+subscription status
+
+renewal
+
+included monthly credits
+
+credit replenishment
+
+additional credit purchases
+
+payment history
+
+webhooks
+
+idempotency
+
+failed payment handling
+
+subscription cancellation
+
+Do not tie project existence to subscription existence.
+
+If a customer cancels:
+
+their project record remains.
+
+Production applications should not automatically be deleted merely because the SaaS subscription ended.
+
+AI editing/managed capabilities can become restricted according to plan status.
+
+Users can reactivate later.
+
+---
+
+# 25. NOTIFICATIONS
+
+Long-running operations should not require the user to stare at the screen.
+
+At minimum architect for:
+
+build completed
+
+build failed
+
+deployment completed
+
+deployment failed
+
+integration requires attention
+
+Potential delivery:
+
+in-app
+
+email
+
+Use Resend or an appropriate provider if needed.
+
+Do not block the entire V1 on an elaborate notification system.
+
+---
+
+# 26. UI / UX PRINCIPLES
+
+This product is specifically for people who may not understand software development.
+
+Avoid developer-heavy interfaces.
+
+Do not make the dashboard look like:
+
+GitHub + AWS + Vercel combined.
+
+Use plain concepts:
+
+Projects
+
+Build
+
+Preview
+
+Publish
+
+Live
+
+Domain
+
+Integrations
+
+Versions
+
+Usage
+
+Do not expose:
+
+SHA
+
+commit refs
+
+deployment IDs
+
+environment scopes
+
+branch terminology
+
+unless inside an advanced/details view where necessary.
+
+The interface should be polished, calm and intentional.
+
+Avoid dashboard information overload.
+
+The dashboard should primarily answer:
+
+What am I building?
+
+What state is it in?
+
+What should I do next?
+
+---
+
+# 27. DASHBOARD
+
+The main dashboard should prioritize projects.
+
+Each project card might communicate:
+
+name
+
+short description
+
+preview/thumbnail where practical
+
+status
+
+production domain/URL
+
+last modified
+
+remaining action if any
+
+Examples:
+
+LIVE
+
+BUILDING
+
+NEEDS INTEGRATION
+
+DRAFT
+
+Do not clutter project cards with infrastructure metadata.
+
+Primary CTA:
+
+New Project
+
+---
+
+# 28. PROJECT WORKSPACE UX
+
+The workspace is the heart of the product.
+
+Aim for a high-quality responsive split experience on desktop:
+
+conversation/activity
++
+preview
+
+Mobile should remain usable rather than attempting to force a tiny desktop split.
+
+The conversation should distinguish:
+
+user requests
+
+planning questions
+
+build progress
+
+completed changes
+
+errors
+
+integration requirements
+
+The preview should clearly communicate whether the user is looking at:
+
+working preview
+
+or
+
+production.
+
+Publishing should be deliberate.
+
+---
+
+# 29. ERROR HANDLING
+
+Never show raw infrastructure errors to a nontechnical user as the only explanation.
+
+Internally preserve detailed errors.
+
+Externally translate them.
+
+Example internal:
+
+V0_API_RATE_LIMITED
+
+User:
+
+> The builder is temporarily busy. Your project is safe. Try again shortly.
+
+Example:
+
+VERCEL_DEPLOYMENT_FAILED
+
+User:
+
+> We couldn't publish this version. Your existing live version is unaffected.
+
+Then allow retry.
+
+Create proper structured error handling.
+
+---
+
+# 30. IDEMPOTENCY
+
+Pay particular attention to operations that can cost money or create external resources.
+
+Examples:
+
+payments
+
+credit purchases
+
+domain purchases
+
+Vercel project creation
+
+deployments
+
+v0 project creation
+
+webhook handling
+
+A double-click or retried webhook should not create duplicate resources or double-charge users.
+
+---
+
+# 31. OBSERVABILITY
+
+Implement sensible structured logging.
+
+Important operations should be traceable across:
+
+our user
+
+our project
+
+build
+
+v0 resource
+
+Vercel deployment
+
+payment
+
+Do not log secrets.
+
+Errors should provide enough context for us to debug production problems.
+
+---
+
+# 32. PLATFORM ENVIRONMENT VARIABLES
+
+Use environment variables for platform infrastructure.
+
+Expected categories may include:
+
+APP URL
+
+SUPABASE URL
+
+SUPABASE public key
+
+SUPABASE service-role key
+
+v0 API key
+
+Vercel credentials/team information
+
+GitHub App credentials if actually required
+
+Paystack credentials
+
+Redis/rate-limit credentials
+
+Resend credentials
+
+encryption/secrets key if architecture requires one
+
+Do not invent required credentials prematurely.
+
+After inspecting actual integrations, create:
+
+`.env.example`
+
+with every required variable documented.
+
+Never commit real secrets.
+
+Validate required server-side configuration at startup where appropriate.
+
+---
+
+# 33. CUSTOMER PROJECT SECRETS
+
+Customer project secrets are NOT platform environment variables.
+
+They belong to the relevant project.
+
+Design an appropriate secure storage/injection mechanism.
+
+The generated application should access them through normal environment variables.
+
+Example:
+
+PAYSTACK_SECRET_KEY
+
+ELEVENLABS_API_KEY
+
+SUPABASE_URL
+
+etc.
+
+Never send sensitive values to the browser unnecessarily.
+
+Never expose service-role/private keys in client bundles.
+
+---
+
+# 34. SECURITY
+
+Treat this as a multi-user SaaS.
+
+At minimum consider:
+
+authorization
+
+RLS
+
+secure server actions/routes
+
+file access control
+
+upload validation
+
+secret encryption/storage
+
+API abuse
+
+prompt/user content boundaries
+
+webhook signature verification
+
+CSRF where applicable
+
+XSS
+
+injection
+
+SSRF possibilities
+
+external URL handling
+
+rate limits
+
+IDOR
+
+cross-project access
+
+secret leakage in logs
+
+generated-project isolation
+
+Do not over-engineer enterprise security features, but do not build obviously unsafe foundations.
+
+---
+
+# 35. DO NOT HARDWIRE PROVIDERS INTO DOMAIN LOGIC
+
+Use sensible service boundaries.
+
+For example, product logic should understand concepts like:
+
+builder
+
+deployment
+
+domain
+
+billing
+
+notification
+
+storage
+
+rather than spreading v0/Vercel/Paystack API calls throughout React components.
+
+We need enough abstraction to replace providers later.
+
+Do not create abstraction for abstraction's sake.
+
+The goal is maintainability and provider independence at meaningful boundaries.
+
+---
+
+# 36. FIRST REAL ACCEPTANCE PROJECT
+
+Do NOT use a Todo app as the primary end-to-end test.
+
+Use a realistic application.
+
+Build through our platform:
+
+HAVENROCK PROPERTIES
+
+A fictional professional real-estate business.
+
+The test request should approximate:
+
+> Build a professional real-estate platform for HavenRock Properties. Visitors should be able to browse available properties, filter/search listings, view detailed property pages and submit enquiries. The company needs an internal CRM where authorized staff can see and manage incoming leads. Leads should progress through New, Contacted, Qualified, Viewing Scheduled, Negotiating, Won or Lost. The site should feel premium, modern and trustworthy and work properly on mobile.
+
+The generated product should reasonably include:
+
+public marketing pages
+
+property listings
+
+property detail
+
+search/filter
+
+property imagery
+
+enquiry flow
+
+responsive experience
+
+admin/staff authentication where appropriate
+
+lead dashboard
+
+lead detail
+
+notes/follow-up capability where appropriate
+
+pipeline status
+
+appropriate persistence/integration architecture
+
+Do not manually build HavenRock into our SaaS.
+
+The point is to verify that **our builder platform can cause the external builder to create it.**
+
+---
+
+# 37. ATTACHMENT ACCEPTANCE TEST
+
+After HavenRock exists, upload an image and request:
+
+> Replace the current hero image with this image. Keep the existing text and layout, but make sure the image crops properly on desktop and mobile.
+
+Verify:
+
+* attachment reaches builder
+* same project is modified
+* existing unrelated features remain
+* preview updates
+* image actually appears
+* responsive behavior remains acceptable
+
+---
+
+# 38. CONTINUATION ACCEPTANCE TEST
+
+Next request:
+
+> Add a property viewing scheduling flow. A visitor should be able to request a preferred viewing date and time from a property page, and staff should be able to see the request in the CRM.
+
+Verify that the builder modifies the SAME project.
+
+It must not regenerate an unrelated application.
+
+---
+
+# 39. MISSING CREDENTIAL ACCEPTANCE TEST
+
+Request functionality requiring an external service that is not configured.
+
+For example:
+
+> Connect the application to Supabase for the database and authentication.
+
+Expected behavior:
+
+The application should still be built as completely as possible.
+
+The platform should identify required configuration.
+
+It should present the user with actionable integration requirements.
+
+It should not simply show:
+
+BUILD FAILED.
+
+After credentials are supplied:
+
+configure the project environment,
+
+resume/continue the same project,
+
+ask builder to complete/verify the real integration,
+
+and update preview.
+
+---
+
+# 40. DEPLOYMENT ACCEPTANCE TEST
+
+Publish HavenRock.
+
+Verify:
+
+* Vercel project exists
+* deployment succeeds
+* production URL is stored
+* user sees LIVE
+* application works from production URL
+* deployment record exists
+
+Then request another change.
+
+Verify that:
+
+existing production remains available
+
+new change appears in preview
+
+production changes only after successful publish.
+
+---
+
+# 41. DOMAIN ACCEPTANCE TEST
+
+Connect an existing domain or appropriate test domain.
+
+Verify:
+
+domain ownership/verification state
+
+DNS instructions if required
+
+Vercel project assignment
+
+SSL/production state where applicable
+
+user-friendly status reporting
+
+Do not perform a real paid domain purchase automatically during automated testing.
+
+Paid purchases require explicit intentional action.
+
+---
+
+# 42. PERSISTENCE ACCEPTANCE TEST
+
+Simulate returning later.
+
+End session.
+
+Reload/re-authenticate.
+
+Open Projects.
+
+Select HavenRock.
+
+Verify:
+
+project exists
+
+conversation/history or useful context exists
+
+preview/production information exists
+
+integration state exists
+
+deployment history exists
+
+attachments/context remain correctly associated
+
+Then request:
+
+> Add a featured properties section to the homepage using the existing property data.
+
+Verify successful continuation.
+
+This is a critical acceptance requirement.
+
+---
+
+# 43. FAILURE ACCEPTANCE TEST
+
+Intentionally test:
+
+builder API failure
+
+rate limit
+
+invalid attachment
+
+Vercel deployment failure where safely simulatable
+
+duplicate request
+
+missing project
+
+unauthorized project access
+
+expired session
+
+payment webhook replay
+
+missing environment configuration
+
+The system should fail predictably and preserve project state.
+
+---
+
+# 44. TESTING STRATEGY
+
+Implement appropriate:
+
+unit tests
+
+service tests
+
+integration tests
+
+API tests
+
+database authorization tests
+
+end-to-end tests
+
+Do not chase meaningless 100% coverage.
+
+Prioritize critical business behavior:
+
+authorization
+
+project ownership
+
+credit deduction
+
+idempotency
+
+external resource mapping
+
+builder continuation
+
+attachment association
+
+secret isolation
+
+publish state
+
+billing webhooks
+
+rate limits
+
+The acceptance journey should have automated coverage where practical and a documented manual test procedure where external providers make automation inappropriate.
+
+---
+
+# 45. BUILD IN VERTICAL SLICES
+
+Do not create the entire database, then entire backend, then entire frontend without proving integration.
+
+Prefer functional vertical slices.
+
+Suggested progression:
+
+SLICE 1
+
+Auth
+→ create project
+→ basic dashboard
+
+SLICE 2
+
+Prompt
+→ v0 project/chat
+→ actual generation
+→ preview
+
+This is the most important early milestone.
+
+Prove it before expanding substantially.
+
+SLICE 3
+
+Continue conversation
+→ modify same project
+→ updated preview
+
+SLICE 4
+
+Attachments
+→ builder receives asset
+→ project uses asset
+
+SLICE 5
+
+Persistent project reopening
+
+SLICE 6
+
+Publish
+→ Vercel
+→ production state
+
+SLICE 7
+
+Integrations/secrets
+→ missing requirement
+→ configuration
+→ completion
+
+SLICE 8
+
+Usage credits
+→ limits
+→ rate limiting
+
+SLICE 9
+
+Subscriptions/billing
+
+SLICE 10
+
+Domains
+
+SLICE 11
+
+Notifications/admin visibility/polish
+
+Adjust this sequence if current API realities justify it, but prove the core builder loop early.
+
+---
+
+# 46. IMPLEMENTATION QUALITY
+
+Use a coherent modern architecture.
+
+Prioritize:
+
+TypeScript
+
+strong types
+
+schema validation
+
+clear service boundaries
+
+server/client separation
+
+secure API access
+
+database migrations
+
+reusable UI components
+
+responsive design
+
+loading states
+
+empty states
+
+error states
+
+accessibility
+
+clean code
+
+structured logs
+
+proper configuration
+
+Avoid:
+
+giant files
+
+massive React components
+
+duplicated API logic
+
+hardcoded pricing everywhere
+
+hardcoded provider IDs
+
+client-side secrets
+
+fake mock functionality presented as finished
+
+dead placeholder buttons
+
+UI elements with no implementation
+
+---
+
+# 47. DESIGN QUALITY
+
+The platform itself must feel like a real commercial product.
+
+Do not generate a generic admin-template dashboard with dozens of cards.
+
+The interface should feel:
+
+focused
+
+modern
+
+minimal
+
+professional
+
+fast
+
+clear
+
+calm
+
+The builder workspace deserves most of the design attention.
+
+Avoid excessive gradients, decorative statistics and unnecessary dashboard widgets.
+
+Use hierarchy and whitespace properly.
+
+A new user should understand where to start within seconds.
+
+---
+
+# 48. RESPONSIVENESS
+
+Desktop is important because building software benefits from space.
+
+But the dashboard and project management should work well on mobile.
+
+For the builder workspace, create an intentional mobile experience:
+
+for example switching between Chat and Preview rather than squeezing both into unusable columns.
+
+Do not merely shrink desktop layout.
+
+---
+
+# 49. PERFORMANCE
+
+Avoid unnecessary polling.
+
+Use streaming/webhooks/revalidation where current APIs make sense.
+
+Do not repeatedly send huge unnecessary payloads.
+
+Optimize attachment handling.
+
+Lazy-load expensive UI where appropriate.
+
+Keep dashboard/project loading responsive.
+
+---
+
+# 50. DATA OWNERSHIP AND DELETION
+
+Design clear ownership.
+
+A user owns their project relationship inside our platform.
+
+Deleting a project should be deliberate.
+
+Do not automatically delete external production resources unless that behavior is explicitly confirmed by the user.
+
+Account cancellation and project deletion are different operations.
+
+Subscription cancellation should not equal application deletion.
+
+---
+
+# 51. ADMIN / INTERNAL OPERATIONS
+
+Create only the internal controls necessary to operate V1 safely.
+
+We need visibility into things such as:
+
+users
+
+projects
+
+plan
+
+credits
+
+builder usage
+
+failed builds
+
+deployments
+
+subscription state
+
+possibly global usage/spend
+
+Do not spend excessive development time creating a huge admin product.
+
+The operational data and service methods matter more than elaborate admin UI.
+
+---
+
+# 52. DOCUMENTATION
+
+Create useful project documentation.
+
+At minimum:
+
+README
+
+architecture overview
+
+setup instructions
+
+environment variables
+
+database setup/migrations
+
+v0 integration explanation
+
+Vercel integration explanation
+
+billing setup
+
+rate-limit setup
+
+development workflow
+
+deployment instructions
+
+testing instructions
+
+known limitations
+
+Do not write documentation for functionality that doesn't exist.
+
+---
+
+# 53. IMPORTANT IMPLEMENTATION RULE
+
+Whenever there is uncertainty about an external API:
+
+DO NOT HALLUCINATE.
+
+Inspect:
+
+official documentation
+
+installed SDK types
+
+package source/types where useful
+
+actual API responses during development
+
+If an expected capability does not exist, document it and design around it.
+
+The product requirements are authoritative.
+
+The assumed implementation details are not.
+
+---
+
+# 54. DO NOT OVERBUILD
+
+V1 is not:
+
+an IDE
+
+a cloud terminal
+
+a database platform
+
+an AWS replacement
+
+a universal OAuth marketplace
+
+a custom Git provider
+
+a custom deployment platform
+
+a custom coding model
+
+a design tool
+
+a full enterprise collaboration suite
+
+We are intentionally building on existing infrastructure.
+
+The product value comes from orchestrating these capabilities into an extremely simple software-building and management experience.
+
+---
+
+# 55. SUCCESS CRITERIA
+
+The first version succeeds when a genuinely nontechnical user can:
+
+SIGN UP
+
+↓
+
+CREATE PROJECT
+
+↓
+
+DESCRIBE A REAL SOFTWARE IDEA
+
+↓
+
+UPLOAD SUPPORTING FILES/IMAGES
+
+↓
+
+HAVE THE PLATFORM UNDERSTAND THE REQUEST
+
+↓
+
+BUILD THE APPLICATION THROUGH v0
+
+↓
+
+WATCH/UNDERSTAND BUILD PROGRESS
+
+↓
+
+SEE A REAL WORKING PREVIEW
+
+↓
+
+REQUEST A CHANGE
+
+↓
+
+SEE THE SAME PROJECT UPDATED
+
+↓
+
+ADD AN IMAGE THROUGH CHAT
+
+↓
+
+SEE IT USED CORRECTLY
+
+↓
+
+BE TOLD ABOUT ANY MISSING EXTERNAL CONFIGURATION WITHOUT THE WHOLE BUILD FAILING
+
+↓
+
+CONFIGURE REQUIRED PROJECT SECRETS
+
+↓
+
+COMPLETE/VERIFY THE INTEGRATION
+
+↓
+
+PUBLISH
+
+↓
+
+GET A LIVE PRODUCTION APPLICATION
+
+↓
+
+CONNECT A DOMAIN
+
+↓
+
+LEAVE
+
+↓
+
+RETURN LATER
+
+↓
+
+OPEN THE SAME PROJECT
+
+↓
+
+REQUEST ANOTHER FEATURE
+
+↓
+
+PREVIEW IT
+
+↓
+
+PUBLISH THE UPDATE
+
+If that experience works reliably, the foundation is successful.
+
+---
+
+# 56. YOUR EXECUTION PROCESS
+
+Follow this sequence.
+
+### PHASE 1 — DISCOVERY
+
+Inspect the repository.
+
+Inspect available environment/configuration.
+
+Inspect current external SDKs/APIs.
+
+Understand this specification fully.
+
+Do not code yet.
+
+### PHASE 2 — CAPABILITY VERIFICATION
+
+Complete the ten checks defined at the beginning.
+
+Explicitly distinguish:
+
+CONFIRMED
+
+ASSUMED
+
+UNAVAILABLE
+
+REQUIRES WORKAROUND
+
+Do not hide uncertainties.
+
+### PHASE 3 — ARCHITECTURE
+
+Design:
+
+system boundaries
+
+database
+
+builder abstraction
+
+external-resource mappings
+
+project lifecycle
+
+attachment flow
+
+secret flow
+
+deployment flow
+
+domain flow
+
+usage/credit system
+
+billing flow
+
+authorization/security
+
+failure recovery
+
+### PHASE 4 — IMPLEMENTATION PLAN
+
+Break work into vertical slices.
+
+Identify dependencies.
+
+Identify risky integrations.
+
+Define acceptance criteria.
+
+### PHASE 5 — BUILD
+
+Implement incrementally.
+
+Do not leave major fake functionality behind placeholder UI.
+
+### PHASE 6 — VERIFY EACH SLICE
+
+Run:
+
+type checks
+
+linting
+
+tests
+
+build
+
+appropriate integration tests
+
+Fix failures before continuing where practical.
+
+### PHASE 7 — END-TO-END VALIDATION
+
+Execute the complete user journey.
+
+Use HavenRock or an equivalently realistic generated project.
+
+Do not claim completion because the dashboard renders.
+
+### PHASE 8 — SECURITY/FAILURE REVIEW
+
+Review:
+
+authorization
+
+secrets
+
+rate limits
+
+credit accounting
+
+idempotency
+
+external API failures
+
+cross-project isolation
+
+deployment safety
+
+### PHASE 9 — UX REVIEW
+
+Use the product from the perspective of someone who does not know:
+
+Git
+
+Vercel
+
+environment variables
+
+DNS
+
+repositories
+
+deployment terminology.
+
+Remove unnecessary technical friction.
+
+### PHASE 10 — FINAL COMPLETION REVIEW
+
+Before declaring the project complete, compare the implemented product against this entire specification.
+
+Produce:
+
+WHAT IS COMPLETE
+
+WHAT WAS CHANGED FROM THE ORIGINAL ASSUMPTIONS AND WHY
+
+WHAT IS PARTIALLY COMPLETE
+
+WHAT REQUIRES EXTERNAL CREDENTIALS/ACCOUNT CONFIGURATION
+
+KNOWN LIMITATIONS
+
+TEST RESULTS
+
+EXACT STEPS TO RUN LOCALLY
+
+EXACT STEPS TO DEPLOY
+
+Do not label something complete if it has not been implemented or tested.
+
+---
+
+# FINAL PRINCIPLE
+
+Do not optimize for generating the most code.
+
+Optimize for creating the smallest coherent architecture that delivers the complete experience.
+
+We are building:
+
+**a persistent AI software-building, deployment and management platform for nontechnical users.**
+
+v0 is initially the underlying builder.
+
+Vercel is initially the deployment/hosting/domain infrastructure.
+
+Our product is the intelligent layer that makes the entire lifecycle understandable and manageable.
+
+The experience should ultimately reduce software creation to:
+
+**Describe → Build → Preview → Improve → Publish → Manage**
+
+while preserving enough architecture, portability, security and persistence for the generated applications to be real software rather than disposable demos.
+
+Begin with discovery and the ten checks.
+
+Do not start implementation until those checks and the implementation plan are complete.

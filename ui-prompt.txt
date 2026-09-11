@@ -1,0 +1,1566 @@
+We are now entering the PRODUCT UX REDESIGN + LAUNCH READINESS phase for proBuild.
+
+IMPORTANT:
+Do not begin by rewriting the application.
+Do not throw away working architecture.
+Do not replace working integrations simply because another implementation looks cleaner.
+Do not treat this as a visual reskin.
+Do not blindly add features from this specification.
+
+The underlying product architecture has already been built and substantially live-tested against real Supabase, v0 Platform API, and Vercel resources.
+
+Your first responsibility is to inspect the existing repository, database/schema, routes, components, BuilderEngine implementation, v0 integration, project persistence, build lifecycle, deployment implementation, attachments, secrets/integrations, credits, notifications, rate limiting, billing and domain work.
+
+Understand what already exists before deciding what must change.
+
+The purpose of this phase is to transform the existing technically-functional product into a polished, coherent AI software-building environment that feels native, persistent and trustworthy to nontechnical users.
+
+The experience must NOT feel like a thin frontend sending API requests to v0.
+
+==================================================
+1. PRODUCT DEFINITION
+==================================================
+
+proBuild is a persistent AI software-building environment.
+
+A user should be able to:
+
+Describe what they want to build
+→ create a persistent project
+→ watch proBuild work
+→ see a live preview
+→ request changes conversationally
+→ leave and return later
+→ continue working on the same project
+→ publish a chosen version
+→ connect services/domains when necessary
+→ maintain the project over time.
+
+Users may also:
+
+Browse templates
+→ inspect an actual template preview
+→ create their own project from that template
+→ continue modifying it with AI.
+
+The product should feel like:
+
+"This is my project and proBuild is working on it with me."
+
+NOT:
+
+"I am submitting prompts to an API that generates websites."
+
+Reference interaction philosophies include modern AI builders such as v0, Lovable and Bolt, while proBuild should deliberately reduce technical cognitive load for nontechnical users.
+
+Do not clone any competitor visually.
+
+==================================================
+2. CORE PRODUCT PRIMITIVES
+==================================================
+
+Treat these as separate concepts:
+
+USER
+PROJECT
+TEMPLATE
+MESSAGE
+ATTACHMENT
+BUILD
+PROJECT VERSION
+PREVIEW
+DEPLOYMENT
+DOMAIN
+INTEGRATION / SECRET
+USAGE EVENT
+CREDIT LEDGER
+SUBSCRIPTION
+NOTIFICATION
+
+Do not collapse project state, build state and deployment state into one generic status.
+
+A PROJECT is persistent.
+
+A BUILD is an asynchronous attempt to change that project.
+
+A VERSION is the result of a successful build or project clone.
+
+A PREVIEW represents the current working version.
+
+A DEPLOYMENT represents a version deliberately published to production.
+
+A TEMPLATE is a reusable known project starting state.
+
+==================================================
+3. FIRST TASK: AUDIT THE EXISTING APPLICATION
+==================================================
+
+Before implementation, inspect the repository and produce a concise audit.
+
+Determine:
+
+- what current screens/routes exist
+- current navigation structure
+- current project creation flow
+- current authentication flow
+- current workspace implementation
+- how messages are persisted
+- whether user messages are rendered optimistically
+- what causes the current request/reload feeling
+- how polling/build status currently works
+- how refresh reconstructs workspace state
+- how previews are stored/rendered
+- how builds map to v0 project/chat IDs
+- how attachments work
+- how project status is currently represented
+- current deployment/publish architecture
+- current integrations/secrets implementation
+- current credits/usage architecture
+- current notifications
+- current rate limiting
+- current domains implementation
+- current mobile/responsive behavior
+- current light/dark theme support, if any
+- current database schema
+- which existing pieces already satisfy this specification
+- which changes require frontend work only
+- which genuinely require backend/schema changes
+
+Preserve the existing working v0/Supabase/Vercel architecture wherever possible.
+
+Do not code until this audit and an implementation plan exist.
+
+==================================================
+4. INFORMATION ARCHITECTURE
+==================================================
+
+The permanent primary product surfaces are:
+
+CREATE
+PROJECTS
+TEMPLATES
+PROJECT WORKSPACE
+
+Secondary/account surfaces:
+
+Notifications
+Credits / Usage
+Account
+Appearance
+Billing
+Project Settings
+
+The product should not have a traditional marketing landing page as the authenticated/default creation experience.
+
+The primary home experience is the creation surface.
+
+==================================================
+5. GLOBAL NAVIGATION
+==================================================
+
+Desktop application navigation should remain restrained.
+
+Conceptually:
+
+proBuild | Create | Projects | Templates | [background activity if any] | Credits | Notifications | Theme | Account
+
+Do not overfill the navigation.
+
+Inside a project workspace, reduce global navigation and give the project most of the screen.
+
+Conceptually:
+
+← Projects | Project Name | save/build state | Publish | More
+
+The workspace should feel like an environment, not a dashboard nested inside another dashboard.
+
+Mobile navigation must be designed independently rather than squeezing desktop navigation onto a phone.
+
+==================================================
+6. CREATE / HOME EXPERIENCE
+==================================================
+
+The Create screen is the primary entry surface.
+
+It should center around:
+
+"What do you want to create?"
+
+with a large, polished composer.
+
+The composer supports:
+
+- text
+- attachments
+- drag/drop where appropriate
+- images
+- screenshots
+- PDFs/docs already supported by the backend
+- visible attachment state
+- send/build action
+
+Below the composer:
+
+START WITH A TEMPLATE
+
+and, for returning authenticated users:
+
+RECENT PROJECTS
+
+Do not fill the page with analytics cards, onboarding checklists or dashboard noise.
+
+Anonymous users should be able to:
+
+- type an idea
+- attach supported files
+- browse templates
+- inspect template previews
+
+When an owned/persistent action is required, authentication may be requested.
+
+Authentication must not destroy the user's current intent.
+
+If they typed a prompt before authentication, preserve it.
+
+If they selected a template before authentication, preserve that action.
+
+After successful authentication, continue where they left off.
+
+Do not force:
+auth → dashboard → new project → retype prompt.
+
+==================================================
+7. AUTHENTICATION UX
+==================================================
+
+Support the existing auth capabilities and add/polish Google auth only if configured/appropriate in the existing architecture.
+
+Primary UX:
+
+Continue with Google
+or
+Continue with email
+
+Authentication is a checkpoint, not an onboarding journey.
+
+Avoid unnecessary first-run questionnaires.
+
+A new user should be able to start building immediately.
+
+==================================================
+8. TEMPLATE SYSTEM
+==================================================
+
+IMPORTANT:
+
+A template is NOT a weak prompt suggestion.
+
+A template is a reusable, known project starting state.
+
+The long-term architecture must support a real template library.
+
+A template should conceptually support:
+
+- title
+- slug
+- category
+- short description
+- long description
+- screenshots/cover
+- live preview URL
+- source/project snapshot or equivalent cloneable state
+- full build specification
+- assets
+- included pages
+- included features
+- tags
+- version
+- author/owner
+- visibility
+- free/premium status
+- price/entitlement metadata where appropriate
+- published/unpublished
+- featured
+- usage metadata
+
+Do NOT build a full marketplace now.
+
+But do not architect templates in a way that prevents:
+
+- many template categories
+- premium templates
+- creator templates
+- private templates
+- user-created templates
+- template versioning
+- template purchases/entitlements
+
+later.
+
+For now, implement the proper template primitive and the initial template experience.
+
+==================================================
+9. TEMPLATE LIBRARY
+==================================================
+
+Design a scalable Templates page.
+
+It should support the UX structure for:
+
+Search
+
+Categories such as:
+All
+Business
+Portfolio
+E-commerce
+Real Estate
+Restaurant
+SaaS
+Landing Page
+Dashboard
+
+Only populate the categories/templates we actually have.
+
+Do not fake a giant catalogue.
+
+Template cards should primarily show:
+
+- strong screenshot
+- title
+- category
+- free/premium indicator where relevant
+
+The design must scale to hundreds of templates later.
+
+==================================================
+10. TEMPLATE DETAIL
+==================================================
+
+Clicking a template should NOT immediately generate something.
+
+Open a proper template detail experience.
+
+Show:
+
+- large actual/live preview where possible
+- screenshots/fallback while preview loads
+- desktop/tablet/mobile preview controls
+- title
+- description
+- pages/features included
+- relevant metadata
+- Use Template action
+
+The user should understand exactly what they are starting with.
+
+==================================================
+11. USE TEMPLATE / CLONING
+==================================================
+
+"Use Template" should create a user-owned project from the known template starting state.
+
+The resulting project must closely/exactly match the template preview because it originates from the same known source state.
+
+Do not implement:
+
+template preview → generic prompt → regenerate approximate template.
+
+The desired primitive is effectively:
+
+clone template version/source → new user project.
+
+Once cloned, it is the user's independent project.
+
+Later changes to the source template must not mutate existing projects.
+
+Template versioning should allow new projects to use the latest published template version while old projects retain their original state.
+
+Reuse a generic project/version cloning primitive where sensible so future functionality such as:
+
+Duplicate Project
+Save as Template
+
+can build on the same architecture.
+
+==================================================
+12. INITIAL TEMPLATE CONTENT
+==================================================
+
+The current catalogue only needs THREE strong initial templates.
+
+However, the system itself must be a permanent template library, not a hardcoded "three workshop templates" feature.
+
+Initial templates:
+
+1. Luxury Real Estate
+2. Premium Restaurant
+3. Creative Portfolio / Agency
+
+Each must be a real, high-quality complete starting project with its own distinct visual language.
+
+Do not create three generic card-grid websites.
+
+Do not create three weak prompts.
+
+Their build specifications should be detailed enough to establish:
+
+- visual direction
+- typography
+- spacing
+- color system
+- imagery treatment
+- pages
+- section composition
+- responsive behavior
+- navigation
+- forms
+- interactions
+- hover/focus states
+- relevant functionality
+- mobile adaptations
+
+Once built, save/use the resulting known project state as the reusable template rather than regenerating from the specification every time.
+
+==================================================
+13. PROJECTS EXPERIENCE
+==================================================
+
+Projects page should primarily answer:
+
+"What have I built and what is happening with it?"
+
+Do not turn it into analytics.
+
+Support:
+
+- search
+- useful status filters
+- current preview thumbnail
+- project name
+- meaningful current state
+- last activity
+- create new project
+
+Project actions may include:
+
+Rename
+Duplicate
+Open live site
+Settings
+Archive
+Delete
+
+Do not expose provider IDs or infrastructure metadata.
+
+==================================================
+14. PROJECT / BUILD / DEPLOYMENT STATE
+==================================================
+
+Do not use one status field for everything.
+
+Conceptually:
+
+PROJECT STATE:
+active
+archived
+deleted/soft-deleted
+
+BUILD STATE:
+queued
+running
+preview_ready if meaningful
+completed
+failed
+cancelled
+waiting_for_capacity if implemented
+
+DEPLOYMENT STATE:
+never_published
+publishing
+published
+publish_failed
+
+The UI may derive human-readable states such as:
+
+Building
+Needs attention
+Unpublished changes
+Published
+Ready
+
+Do not persist those derived labels if they can be correctly calculated.
+
+A project may simultaneously be:
+
+active
+building a new version
+and already published.
+
+The UI must support that truth.
+
+==================================================
+15. PROJECT VERSIONS
+==================================================
+
+Every successful project modification should conceptually result in a version or equivalent durable state.
+
+Example:
+
+Version 1 — Initial website
+Version 2 — Changed branding and hero
+Version 3 — Added testimonials
+
+Maintain the distinction between:
+
+current preview version
+current published version
+
+Example:
+
+Preview = Version 5
+Production = Version 3
+
+UI:
+"Unpublished changes"
+
+Do not overwrite production merely because AI generated a new preview.
+
+If existing provider/source architecture already provides equivalent version semantics, map onto it rather than inventing unnecessary duplication.
+
+==================================================
+16. WORKSPACE — HIGHEST PRIORITY EXPERIENCE
+==================================================
+
+This is the heart of proBuild.
+
+Desktop should use a polished two-panel environment:
+
+LEFT:
+Build/conversation
+
+RIGHT:
+Live preview
+
+The divider should be resizable if practical.
+
+The conversation panel should be collapsible so the user can maximize preview.
+
+The workspace must NOT feel like:
+
+"ChatGPT beside an iframe."
+
+It should feel like:
+
+"This project is open and proBuild is working on it."
+
+==================================================
+17. WORKSPACE TOP BAR
+==================================================
+
+Keep it restrained.
+
+Include:
+
+- back/projects navigation
+- project name
+- useful saved/build/unpublished state
+- Publish
+- More/project actions
+
+Do not show technical infrastructure.
+
+==================================================
+18. MESSAGE UX — CRITICAL
+==================================================
+
+The current experience reportedly feels like an API request:
+
+- user sends message
+- UI waits
+- request feels detached
+- refresh/reload may clear transient content
+- conversation does not feel continuously present
+
+Fix this fundamentally.
+
+When the user sends a message:
+
+1. render it immediately/optimistically
+2. persist it immediately in proBuild's database
+3. create/link the build asynchronously
+4. keep it visible regardless of provider latency
+5. update build state independently
+6. preserve attachments
+7. reconstruct everything correctly after refresh
+
+The user should NEVER have to wait for v0 before seeing their own message.
+
+Refresh must not erase sent messages.
+
+Closing and reopening the project must reconstruct the conversation from persisted state.
+
+The provider conversation is not the sole UI source of truth.
+
+==================================================
+19. BUILD EXPERIENCE
+==================================================
+
+Generation can take time.
+
+Do not show only a spinner.
+
+Do not invent fake percentages.
+
+Do not invent detailed AI steps that the provider does not expose.
+
+Use truthful, useful states based on information we actually have.
+
+Possible human-facing progression:
+
+Request received
+Waiting to start
+Working on your project
+Preview available
+Finalizing
+Ready
+
+The exact implementation should map to actual backend/provider events.
+
+An initial assistant/activity response can acknowledge the task naturally.
+
+Example:
+
+"Building HavenRock Properties"
+
+or for edits:
+
+"Making those changes…"
+
+Avoid excessive AI chatter.
+
+==================================================
+20. PREVIEW DURING BUILD
+==================================================
+
+For the first build:
+
+Do not leave a dead blank panel.
+
+Show an intentional preview state:
+
+"Building your site
+Your preview will appear here as soon as it's ready."
+
+Use subtle skeleton/activity visuals if appropriate.
+
+As soon as a usable preview exists, show it.
+
+Do not unnecessarily wait for every backend task to reach final completion.
+
+For modifications to an existing project:
+
+NEVER blank the existing preview.
+
+Keep current version visible while the next version is being built.
+
+When the new preview is available, update the preview deliberately.
+
+==================================================
+21. PREVIEW CONTROLS
+==================================================
+
+Support:
+
+Desktop
+Tablet
+Mobile
+
+and:
+
+Open preview
+
+Allow preview expansion/collapsing of the conversation pane where appropriate.
+
+The generated project's own theme must not inherit proBuild's light/dark theme.
+
+Later visual editing/code/file views may be possible, but do NOT build a large code editor or visual editing system in this phase unless substantial functionality already exists.
+
+Design the workspace so those capabilities can be added later.
+
+==================================================
+22. CONTINUOUS EDITING
+==================================================
+
+A follow-up request must feel like modification of the same project.
+
+Example:
+
+"Make the navbar black and change the hero heading."
+
+The message appears immediately.
+
+Existing preview stays visible.
+
+UI indicates:
+
+"Making your changes…"
+
+When ready, preview updates.
+
+Do not make each modification feel like a new website generation.
+
+Continue using the same persistent v0 project/chat as already proven by the existing architecture.
+
+==================================================
+23. BUILD CONCURRENCY / FUTURE QUEUE
+==================================================
+
+The current architecture already protects against conflicting simultaneous builds.
+
+Preserve that safety.
+
+Long-term UX should support queued modifications:
+
+Build A — running
+Build B — queued
+Build C — queued
+
+Do not necessarily build a sophisticated queue now unless it is required for launch reliability and can be implemented safely.
+
+At minimum:
+
+- never lose the user's next intended instruction
+- preserve draft/input
+- explain that current changes are still being applied
+- do not expose raw concurrency errors
+
+The architecture should not prevent a proper queue later.
+
+==================================================
+24. BACKGROUND BUILDS
+==================================================
+
+Builds belong to the backend/project, not the browser tab.
+
+The user must be able to:
+
+- navigate away
+- open another project
+- refresh
+- close browser
+- return later
+
+without losing the build.
+
+Projects page should show active build state.
+
+Global navigation may show subtle active-build activity:
+
+"1 building"
+
+When completed, create a meaningful notification.
+
+==================================================
+25. REFRESH / REOPEN / RECOVERY
+==================================================
+
+This is a launch-critical acceptance requirement.
+
+At any point, browser refresh should reconstruct:
+
+- conversation
+- attachments
+- build state
+- preview
+- current published state
+- relevant error state
+
+If a build is still running, polling/status observation should resume.
+
+A refresh should never make the product look as though the request never happened.
+
+==================================================
+26. HISTORY
+==================================================
+
+Provide or prepare a simple user-facing project history model.
+
+Do not expose Git commits as the primary UX.
+
+Human language:
+
+Today
+12:02 — Added testimonial section — Current preview
+11:48 — Changed colors and logo — Published
+11:31 — Initial website
+
+If restore is implemented, restoration should create a new state/version rather than destroying later history.
+
+Do not overbuild history if provider limitations make restoration unsafe right now.
+
+==================================================
+27. PUBLISH EXPERIENCE
+==================================================
+
+Build, Preview and Publish are different concepts.
+
+AI changes the project.
+Preview shows the current working version.
+Publish deliberately updates production.
+
+First publish:
+
+"Publish your website"
+
+show the resulting default URL and a simple Publish Website action.
+
+Publishing state should be visible.
+
+Success:
+
+"Your website is live"
+
+with:
+
+Open website
+Copy link
+Connect custom domain
+
+For an already published project with newer preview changes:
+
+"Unpublished changes"
+
+Publish should deploy the current chosen preview/version.
+
+Existing production must remain online until the new deployment succeeds.
+
+If publishing fails:
+
+"We couldn't publish your latest version.
+Your current live website is still online."
+
+Never replace a working production site with a failed deployment state.
+
+==================================================
+28. DOMAINS
+==================================================
+
+Primary UX should use outcome language.
+
+Project Settings → Domains
+
+Show:
+
+Current website URL
+Custom domains
+
+Allow:
+
+Use a domain you already own
+
+Future:
+Get a new domain
+
+Existing domain connection states should be understandable:
+
+Checking
+Needs setup
+Verifying
+Connected
+Issue detected
+
+Only expose DNS records when the user actually needs to configure them.
+
+Explain what to do in plain language.
+
+Do not dump DNS/Vercel terminology by default.
+
+Do not purchase real domains during automated testing.
+
+The current Vercel domain architecture should be preserved and completed only where credentials/capabilities permit.
+
+==================================================
+29. INTEGRATIONS
+==================================================
+
+Primary UX:
+
+"Connect services"
+
+NOT:
+
+"Environment Variables"
+
+Examples:
+
+Payments
+Paystack
+
+Database
+Supabase
+
+AI
+OpenAI
+
+Messaging
+WhatsApp
+
+Only show integrations relevant to the project where possible.
+
+Do not hardcode the system so it only works with known providers.
+
+The generic underlying project-secret/environment-variable system must remain extensible.
+
+==================================================
+30. MISSING CREDENTIAL RULE — NON-NEGOTIABLE
+==================================================
+
+Missing third-party credentials must NOT unnecessarily stop the overall project build.
+
+Example:
+
+User requests an e-commerce website with Paystack.
+
+The builder should still implement as much as safely possible:
+
+- checkout UI
+- service layer
+- routes
+- webhook structure
+- database fields
+- success/failure states
+- env references
+- demo/mock states where appropriate
+
+Then tell the user:
+
+"Paystack needs to be connected to activate real payments."
+
+The rest of the project remains usable and previewable.
+
+After credentials are added, securely inject them and perform the required verification/follow-up build.
+
+==================================================
+31. SECRET UX
+==================================================
+
+Dedicated integration screens may ask for the credentials required by that provider.
+
+After saving a secret, do not display the full value again.
+
+Example:
+
+••••••••abc4
+
+Actions:
+
+Replace
+Remove
+
+Never expose real secrets in:
+
+- browser client state unnecessarily
+- chat history
+- AI prompt history unnecessarily
+- logs
+- screenshots
+- notifications
+
+The builder should preferably know that a variable is available without needing its secret value included in natural-language prompts.
+
+Preserve the existing secure implementation where it already satisfies this.
+
+==================================================
+32. ADVANCED ENVIRONMENT VARIABLES
+==================================================
+
+Advanced users still need a generic mechanism.
+
+Project Settings → Advanced → Environment Variables
+
+This is the fallback for providers without dedicated integration UI.
+
+Do not make this the primary integration experience.
+
+==================================================
+33. PROJECT SETTINGS
+==================================================
+
+Keep project settings coherent.
+
+Suggested information architecture:
+
+General
+Domains
+Integrations
+Publishing
+History
+Advanced
+Danger Zone
+
+Do not create excessive settings navigation.
+
+==================================================
+34. CREDITS
+==================================================
+
+Credits should be understandable without exposing tokens/provider economics.
+
+Global UI can show a restrained balance:
+
+342 credits
+
+Click/popover:
+
+Build credits
+342 available
+Current plan
+Usage this month
+View usage
+Get more credits
+
+Do not show v0 token counts or raw dollar costs to normal users.
+
+Usage should be based on the existing actual provider usage/ledger architecture.
+
+Do not invent usage when provider reporting is unavailable.
+
+==================================================
+35. CREDIT BEHAVIOR
+==================================================
+
+Do not constantly interrupt builds with credit warnings.
+
+Low balance:
+gentle warning.
+
+Insufficient balance:
+block the new build cleanly.
+
+Important:
+
+The user's unsent/sent intent must not disappear because they need to upgrade or purchase credits.
+
+After resolving the credit issue, they should be able to continue without retyping everything.
+
+Never charge credits for provider requests that never actually consume billable usage.
+
+Keep ledger operations idempotent.
+
+==================================================
+36. PLANS / ENTITLEMENTS
+==================================================
+
+Do not scatter hardcoded plan assumptions throughout the UI.
+
+Plans and entitlements should be configuration/database driven.
+
+Potential entitlements include:
+
+- included credits
+- active/managed project limits
+- rate limits
+- premium template access
+- custom domains
+- additional credit purchase
+
+Exact pricing and allowances may change after more real usage data.
+
+Design for configurability.
+
+Template access should conceptually be:
+
+"Is this user entitled to use this template?"
+
+not:
+
+if plan === "pro"
+
+This allows future:
+
+- free templates
+- plan-included templates
+- individually purchased templates
+- creator marketplace templates
+
+without rewriting access logic.
+
+Do not build the marketplace now.
+
+==================================================
+37. USAGE EXPERIENCE
+==================================================
+
+Provide a simple user-facing usage view.
+
+Example structure:
+
+Current plan
+Credits remaining
+Reset date where relevant
+
+Recent usage:
+Project
+Action/build
+Credits consumed
+
+Do not expose raw v0 costs to users.
+
+Internally retain the actual provider cost and ledger data for business economics.
+
+==================================================
+38. NOTIFICATIONS
+==================================================
+
+Notifications are for meaningful completed events or things requiring attention.
+
+Examples:
+
+Build completed
+Build failed
+Publish completed
+Publish failed
+Integration required
+Domain connected
+Domain problem
+Credits low
+Subscription/payment event
+
+Do not create notifications for every minor activity.
+
+If the user is currently inside the relevant workspace, prefer inline feedback where appropriate.
+
+==================================================
+39. ACTIVE BUILD INDICATOR
+==================================================
+
+If builds continue in the background, global navigation may show:
+
+1 building
+
+Clicking it can show active project/builds.
+
+This gives users confidence that work continues when they leave a workspace.
+
+==================================================
+40. PROVIDER CAPACITY / RATE LIMIT UX
+==================================================
+
+The real v0 integration has already encountered provider rate limiting during live testing.
+
+Do NOT expose:
+
+HTTP 429
+v0 rate limit
+provider API error
+
+to normal users.
+
+Differentiate:
+
+A) user/account rate limit
+B) upstream/provider capacity
+
+If user/account limit:
+explain their plan/build limit clearly.
+
+If provider capacity:
+their request should remain safe.
+
+Preferred long-term behavior:
+
+queued
+→ provider capacity unavailable
+→ waiting_for_capacity
+→ controlled backoff/retry
+→ running
+
+If a safe automatic queue/backoff system can be implemented within the existing architecture without destabilizing launch, implement it.
+
+If not, implement a reliable saved request + clear retry state and document the limitation.
+
+Do not create infinite retry loops.
+
+Do not repeatedly consume provider usage.
+
+Do not charge the user for attempts that did not produce billable usage.
+
+==================================================
+41. FAILURE UX
+==================================================
+
+Never expose raw infrastructure errors to normal users.
+
+Build failure:
+
+"We couldn't complete those changes.
+Your current project is safe."
+
+Retry
+
+Provider busy:
+
+"proBuild is busy right now.
+Your request is saved."
+
+Publish failure:
+
+"We couldn't publish your latest version.
+Your current live website is still online."
+
+Connection issue:
+
+"Reconnecting…"
+
+Long-running build:
+
+"This is taking longer than usual.
+You can leave this project and come back later."
+
+Keep detailed technical error data internally for debugging/admin.
+
+==================================================
+42. THEME
+==================================================
+
+Implement a polished:
+
+Light
+Dark
+System
+
+theme system.
+
+Default to system preference for new users.
+
+Persist authenticated preference appropriately.
+
+Anonymous preference may persist locally.
+
+Switching should not require page reload.
+
+Every primary surface must be intentionally designed for both themes.
+
+The generated project preview does NOT inherit proBuild's theme.
+
+==================================================
+43. ACCOUNT EXPERIENCE
+==================================================
+
+Keep the account menu simple:
+
+Name/email
+Account settings
+Usage & billing
+Theme
+Sign out
+
+Account settings:
+
+Profile
+Appearance
+Billing & Usage
+Notifications
+Security where supported
+
+Do not put project-specific configuration in account settings.
+
+==================================================
+44. MOBILE EXPERIENCE
+==================================================
+
+Do not merely shrink desktop.
+
+Global mobile navigation may use:
+
+Create
+Projects
+Templates
+
+Inside Workspace, hide global bottom navigation and prioritize the project.
+
+Use:
+
+Build | Preview
+
+as mobile workspace modes.
+
+The composer remains easy to access.
+
+Publishing remains accessible.
+
+Preview must be genuinely usable on a phone.
+
+Touch targets, modal sizes, scrolling, attachment handling and keyboard behavior must be tested.
+
+==================================================
+45. VISUAL DESIGN DIRECTION
+==================================================
+
+proBuild should feel like a professional tool.
+
+Use:
+
+- strong typography hierarchy
+- generous whitespace
+- restrained borders
+- excellent spacing
+- subtle elevation
+- high-quality icons
+- deliberate hover/focus/pressed states
+- subtle transitions
+- strong loading/skeleton states
+- excellent light/dark contrast
+- responsive layouts
+
+Avoid:
+
+- excessive gradients
+- giant marketing hero sections
+- excessive glassmorphism
+- random colored cards
+- dashboard clutter
+- excessive pills/badges
+- overuse of animations
+- generic AI SaaS aesthetics
+- excessive explanatory copy
+- developer terminology in primary UX
+
+The interface should get out of the way of the user's project.
+
+Use an existing high-quality icon library already in the project where possible rather than emoji icons.
+
+==================================================
+46. COPY / LANGUAGE
+==================================================
+
+Use concise, human product language.
+
+Prefer:
+
+Building your website
+Making your changes
+Your website is live
+Unpublished changes
+Connect Paystack
+Needs attention
+Your project is safe
+
+Avoid:
+
+Generation request submitted
+API response
+Deployment target
+Environment configuration required
+Provider error
+HTTP status
+v0 project
+Vercel deployment ID
+
+Technical terminology may exist under Advanced/Admin surfaces.
+
+==================================================
+47. EMPTY STATES
+==================================================
+
+Every empty state should be useful.
+
+No projects:
+"Create your first project"
+
+No notifications:
+"You're all caught up."
+
+No template search results:
+"No templates match this search."
+"Start from scratch instead."
+
+Do not create decorative empty-state boxes that add no value.
+
+==================================================
+48. DESTRUCTIVE ACTIONS
+==================================================
+
+Explain consequences.
+
+Especially for:
+
+Delete project
+Archive project
+Remove domain
+Remove integration
+Remove secret
+
+If deleting a published project has implications for its live website, accurately explain those implications based on actual implementation.
+
+Do not use vague confirmation copy where specific consequences are known.
+
+==================================================
+49. CURRENT VS FUTURE SCOPE
+==================================================
+
+IMPLEMENT/POLISH NOW:
+
+- Create/home experience
+- global navigation
+- authentication handoff
+- Projects experience
+- real Templates library primitive
+- template detail/preview
+- three initial high-quality templates
+- Use Template / project cloning if technically feasible with current provider architecture
+- workspace redesign
+- optimistic/persistent messaging
+- truthful build feedback
+- preview loading/existing-preview behavior
+- refresh/reopen persistence
+- desktop/tablet/mobile preview modes
+- responsive/mobile workspace
+- publish UX
+- existing domains UX
+- integrations/secrets UX
+- credits/usage UX
+- notifications
+- light/dark/system theme
+- failure/rate-limit UX
+- launch-critical responsive/accessibility polish
+
+DESIGN/ARCHITECT FOR LATER, BUT DO NOT OVERBUILD NOW:
+
+- full creator marketplace
+- third-party template selling
+- marketplace commissions
+- user template publishing marketplace
+- large template catalogue
+- advanced visual editor
+- full IDE/code editor
+- sophisticated multi-build queue if unsafe to add now
+- collaboration/multiplayer
+- team workspaces
+- complex template purchasing
+- domain resale markup
+- provider switching UI
+- advanced analytics
+
+==================================================
+50. PRESERVE WORKING ARCHITECTURE
+==================================================
+
+The existing system has already proven important behavior with real services.
+
+Do not regress:
+
+- Supabase authentication/persistence
+- real v0 project creation
+- real v0 chat creation
+- persistent v0 project/chat continuation
+- real application generation
+- preview URLs
+- image attachments reaching the builder
+- PDF/document attachment handling
+- project persistence
+- usage reporting through v0 reports.getUsage
+- actual provider dollar-cost recording
+- credit ledger foundation
+- project-level concurrency protection
+- secure project secrets
+- v0 project environment variable injection
+- deployment work
+- domain work
+- notification/admin work
+- webhook idempotency/security
+- existing RLS/security controls
+
+If redesign requires changing one of these systems, document WHY before changing it.
+
+==================================================
+51. DATA MIGRATIONS
+==================================================
+
+If the new UX requires schema changes:
+
+- inspect existing schema first
+- make minimal additive migrations where possible
+- preserve existing test projects/data
+- avoid destructive migrations
+- maintain RLS
+- document migration implications
+- seed template data safely
+- do not put secrets into seed data
+
+==================================================
+52. TEMPLATE IMPLEMENTATION DISCOVERY
+==================================================
+
+Before implementing template cloning, inspect the CURRENT installed v0 SDK/API and existing project architecture.
+
+Determine the safest supported method for cloning/forking a known built project.
+
+Possible mechanisms may include project/chat/source/Git repository based cloning, but DO NOT assume any API exists.
+
+Inspect actual SDK types/current documentation available to the project.
+
+If exact project-state cloning cannot safely be implemented with current v0 capabilities:
+
+- do not fake it
+- document the limitation
+- propose the closest architecture that still guarantees template fidelity
+- implement only after reasoning about the tradeoff
+
+Template fidelity is more important than pretending a template system exists.
+
+==================================================
+53. ACCESSIBILITY
+==================================================
+
+Launch-quality baseline:
+
+- keyboard accessible primary controls
+- visible focus states
+- proper button semantics
+- form labels
+- adequate contrast
+- accessible dialogs
+- sensible aria labels where needed
+- no interaction that only works on hover
+- reduced-motion consideration where practical
+
+==================================================
+54. PERFORMANCE
+==================================================
+
+Do not let the redesign make the app unnecessarily heavy.
+
+Particularly optimize:
+
+- template card images
+- project thumbnails
+- live preview loading
+- conversation rendering
+- polling
+- attachment previews
+- dark/light theme hydration
+- route transitions
+
+Avoid unnecessary client components.
+
+Do not poll aggressively when no build is active.
+
+==================================================
+55. ACCEPTANCE TESTS — CRITICAL
+==================================================
+
+After implementation, test the product as a USER, not just through typecheck.
+
+TEST A — anonymous scratch creation
+
+1. Open Create while signed out.
+2. Type a complete website request.
+3. Attach an image.
+4. Press Build.
+5. Authenticate.
+6. Confirm prompt + attachment survived.
+7. Project created.
+8. User message appears immediately.
+9.
