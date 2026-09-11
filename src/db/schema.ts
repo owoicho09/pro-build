@@ -213,6 +213,14 @@ export const projects = pgTable(
     // yet" for a project that had a perfectly good preview — this is the
     // fix for that launch-critical bug.
     previewUrl: text("preview_url"),
+    // v0's preview URLs carry a signed, time-limited token — the URL itself
+    // can go stale (v0's demo host serves its own "loading" shell forever
+    // instead of the real app) well before proBuild would otherwise refetch
+    // it. This timestamp is when previewUrl was last confirmed fresh
+    // against v0, so page loads can cheaply decide "still good" vs. "worth
+    // a live re-check" instead of either trusting it forever or re-checking
+    // on every single load (see PREVIEW_STALE_MS in projects/[id]/page.tsx).
+    previewUrlCheckedAt: timestamp("preview_url_checked_at", { withTimezone: true }),
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

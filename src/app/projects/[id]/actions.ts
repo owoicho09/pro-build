@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
-import { startOrContinueBuild, advanceBuild } from "@/lib/services/build-orchestrator";
+import { startOrContinueBuild, advanceBuild, refreshProjectPreview } from "@/lib/services/build-orchestrator";
 import { uploadAttachmentsFromFormData } from "@/lib/services/attachments";
 import { publishProject } from "@/lib/services/deploy-orchestrator";
 import {
@@ -156,6 +156,33 @@ export async function pollBuildStatus(buildId: string) {
     .single();
 
   return { build: build ?? null };
+}
+
+// Backs the preview pane's "Refresh" button — a live re-check against v0,
+// not just an iframe remount, since a stale-token previewUrl (see
+// projects/[id]/page.tsx's PREVIEW_STALE_MS) would otherwise just remount
+// the same broken URL. refreshProjectPreview() itself is RLS-scoped via the
+// supabase client passed in, same ownership guarantee as every other action
+// here.
+export async function refreshPreviewAction(projectId: string) {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return { error: "Your session expired. Please sign in again." };
+  }
+
+  try {
+    const { previewUrl } = await refreshProjectPreview(supabase, { projectId });
+    return { success: true as const, previewUrl };
+  } catch (err) {
+    console.error("Failed to refresh preview", projectId, err);
+    return {
+      error: toSafeMessage(err, "Couldn't refresh the preview. Please try again."),
+    };
+  }
 }
 
 export async function configureIntegrationAction(_prevState: unknown, formData: FormData) {

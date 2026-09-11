@@ -122,6 +122,7 @@ export interface Database {
           production_url: string | null;
           thumbnail_url: string | null;
           preview_url: string | null;
+          preview_url_checked_at: string | null;
           last_activity_at: string;
           created_at: string;
           updated_at: string;

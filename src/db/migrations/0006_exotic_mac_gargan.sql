@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "preview_url_checked_at" timestamp with time zone;

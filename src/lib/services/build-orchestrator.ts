@@ -429,6 +429,47 @@ export async function advanceBuild(buildId: string): Promise<void> {
   }).catch((err) => console.error("Failed to notify user of build outcome", build.id, err));
 }
 
+// v0's preview URL carries a signed, time-limited token. A project left
+// idle long enough can end up with a persisted previewUrl whose token has
+// expired — the demo host then serves its own "loading" shell forever
+// instead of the real app, which looks identical to "no preview" but never
+// self-corrects on its own. This does a live re-check against v0 and
+// persists the result, used both by the manual "Refresh" button and by
+// page.tsx's time-gated auto self-heal (see PREVIEW_STALE_MS there).
+export async function refreshProjectPreview(
+  supabase: SupabaseClient<Database>,
+  input: { projectId: string },
+): Promise<{ previewUrl: string | null }> {
+  const { data: project, error } = await supabase
+    .from("projects")
+    .select("v0_project_id, v0_chat_id")
+    .eq("id", input.projectId)
+    .single();
+
+  if (error || !project) {
+    throw new Error("Project not found.");
+  }
+  if (!project.v0_project_id || !project.v0_chat_id) {
+    return { previewUrl: null };
+  }
+
+  const preview = await getBuilderEngine().getPreview({
+    externalProjectId: project.v0_project_id,
+    externalChatId: project.v0_chat_id,
+  });
+
+  await supabase
+    .from("projects")
+    .update({
+      preview_url: preview?.url ?? null,
+      preview_url_checked_at: new Date().toISOString(),
+      ...(preview?.screenshotUrl ? { thumbnail_url: preview.screenshotUrl } : {}),
+    })
+    .eq("id", input.projectId);
+
+  return { previewUrl: preview?.url ?? null };
+}
+
 export async function advancePendingBuilds(): Promise<{ advanced: number }> {
   const pending = await db.query.builds.findMany({
     where: inArray(builds.state, ["queued", "streaming"]),

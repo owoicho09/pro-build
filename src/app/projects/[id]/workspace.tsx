@@ -507,7 +507,7 @@ export function Workspace({
       />
 
       <section className={cn("min-h-0 flex-1 md:flex", mobileMode === "preview" ? "flex" : "hidden")}>
-        <PreviewPane previewUrl={previewUrl} inProgress={inProgress} title={project.name} />
+        <PreviewPane projectId={project.id} previewUrl={previewUrl} inProgress={inProgress} title={project.name} />
       </section>
       </div>
     </div>
