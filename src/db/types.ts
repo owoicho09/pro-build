@@ -70,6 +70,7 @@ export interface Database {
           plan_id: string | null;
           paystack_customer_code: string | null;
           created_at: string;
+          welcomed_at: string | null;
         };
         Insert: Partial<Database["public"]["Tables"]["profiles"]["Row"]> & {
           id: string;

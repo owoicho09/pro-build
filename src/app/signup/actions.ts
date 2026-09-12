@@ -3,6 +3,7 @@
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { sendWelcomeIfNeeded } from "@/lib/services/notifications";
 
 const signupSchema = z.object({
   fullName: z.string().min(1, "Name is required"),
@@ -53,6 +54,20 @@ export async function signup(_prevState: unknown, formData: FormData) {
       };
     }
     return { error: error.message };
+  }
+
+  // Fired at account-creation time, not confirmation time — "when sign up"
+  // — regardless of which branch below actually runs. Also called from
+  // auth/callback/route.ts for the other signup paths (Google OAuth, and
+  // this same email-confirmation-pending case once they click through);
+  // sendWelcomeIfNeeded's atomic claim makes calling it from both places
+  // safe, never a double-send.
+  if (data.user) {
+    await sendWelcomeIfNeeded({
+      userId: data.user.id,
+      email: parsed.data.email,
+      fullName: parsed.data.fullName,
+    }).catch((err) => console.error("Failed to send welcome email", data.user?.id, err));
   }
 
   // With Supabase's "Confirm email" setting off, signUp() returns an active

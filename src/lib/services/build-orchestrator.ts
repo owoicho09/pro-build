@@ -778,6 +778,7 @@ export async function advanceBuild(buildId: string): Promise<void> {
         ? "integration_attention"
         : "build_completed"
       : "build_failed",
+    payload: previewUrl ? { previewUrl } : undefined,
   }).catch((err) => console.error("Failed to notify user of build outcome", build.id, err));
 }
 

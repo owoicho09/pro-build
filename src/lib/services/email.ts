@@ -10,9 +10,11 @@ const REQUEST_TIMEOUT_MS = 15_000;
 // row (see notifications.ts) is the guaranteed delivery path; this is a
 // bonus if RESEND_API_KEY happens to be configured.
 export async function sendEmail(input: {
-  to: string;
+  to: string | string[];
   subject: string;
   text: string;
+  /** Optional branded HTML body — see email-templates.ts. Sent alongside `text` (Resend accepts both in one call); plain-text-only callers are unaffected. */
+  html?: string;
 }): Promise<void> {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) return;
@@ -27,7 +29,13 @@ export async function sendEmail(input: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ from, to: input.to, subject: input.subject, text: input.text }),
+        body: JSON.stringify({
+          from,
+          to: input.to,
+          subject: input.subject,
+          text: input.text,
+          ...(input.html ? { html: input.html } : {}),
+        }),
       }),
       REQUEST_TIMEOUT_MS,
       "Timed out sending notification email.",

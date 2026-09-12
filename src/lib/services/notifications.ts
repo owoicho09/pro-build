@@ -1,10 +1,12 @@
 import "server-only";
-import { sql } from "drizzle-orm";
+import { sql, eq, and, isNull } from "drizzle-orm";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { db } from "@/db";
-import { notifications } from "@/db/schema";
+import { notifications, profiles } from "@/db/schema";
 import type { Database, NotificationType } from "@/db/types";
 import { sendEmail } from "./email";
+import { welcomeEmail, buildCompletedEmail, newSignupAdminAlertEmail } from "./email-templates";
+import { getAdminEmails } from "@/lib/config/admin";
 
 type Payload = Record<string, unknown>;
 
@@ -17,13 +19,15 @@ function describe(
   type: NotificationType,
   projectName: string,
   payload: Payload,
-): { subject: string; text: string } {
+): { subject: string; text: string; html?: string } {
   switch (type) {
-    case "build_completed":
+    case "build_completed": {
+      const previewUrl = typeof payload.previewUrl === "string" ? payload.previewUrl : undefined;
       return {
         subject: `"${projectName}" finished building`,
-        text: `Your changes to "${projectName}" are ready to preview.`,
+        ...buildCompletedEmail({ projectName, previewUrl }),
       };
+    }
     case "build_failed":
       return {
         subject: `"${projectName}" build failed`,
@@ -75,11 +79,53 @@ export async function notifyUser(input: {
     );
     const email = result.rows[0]?.email;
     if (email) {
-      const { subject, text } = describe(input.type, input.projectName, payload);
-      await sendEmail({ to: email, subject, text });
+      const { subject, text, html } = describe(input.type, input.projectName, payload);
+      await sendEmail({ to: email, subject, text, html });
     }
   } catch (err) {
     console.error("Failed to send notification email", input.userId, input.type, err);
+  }
+}
+
+// Sends the branded welcome email (to the new user) and a new-signup alert
+// (to every address in ADMIN_EMAILS) exactly once per account, regardless
+// of which signup path actually completes first. Called from BOTH
+// signup/actions.ts (immediate-session email/password signup) and
+// auth/callback/route.ts (Google OAuth, and email-confirmation-pending
+// signup once they click through) — the atomic claim below is what makes
+// calling it from two places safe rather than a double-send.
+export async function sendWelcomeIfNeeded(input: {
+  userId: string;
+  email: string;
+  fullName: string | null;
+}): Promise<void> {
+  const claimed = await db
+    .update(profiles)
+    .set({ welcomedAt: new Date() })
+    .where(and(eq(profiles.id, input.userId), isNull(profiles.welcomedAt)))
+    .returning({ id: profiles.id });
+
+  if (claimed.length === 0) {
+    return; // already welcomed — the other signup path got there first.
+  }
+
+  const welcome = welcomeEmail({ name: input.fullName });
+  await sendEmail({ to: input.email, subject: "Welcome to proBuild", ...welcome }).catch((err) =>
+    console.error("Failed to send welcome email", input.userId, err),
+  );
+
+  const adminEmails = getAdminEmails();
+  if (adminEmails.length > 0) {
+    const alert = newSignupAdminAlertEmail({
+      email: input.email,
+      fullName: input.fullName,
+      signedUpAt: new Date().toISOString(),
+    });
+    await sendEmail({
+      to: adminEmails,
+      subject: `New signup: ${input.email}`,
+      ...alert,
+    }).catch((err) => console.error("Failed to send new-signup admin alert", input.userId, err));
   }
 }
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useState } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { GoogleAuthButton } from "@/components/google-auth-button";
@@ -43,9 +44,14 @@ export function LoginForm({ next, googleEnabled }: { next?: string; googleEnable
           <Input id="email" name="email" type="email" autoComplete="email" required />
         </div>
         <div className="space-y-1.5">
-          <label htmlFor="password" className="text-sm font-medium">
-            Password
-          </label>
+          <div className="flex items-center justify-between">
+            <label htmlFor="password" className="text-sm font-medium">
+              Password
+            </label>
+            <Link href="/forgot-password" className="text-xs font-medium text-brand hover:underline">
+              Forgot password?
+            </Link>
+          </div>
           <Input
             id="password"
             name="password"

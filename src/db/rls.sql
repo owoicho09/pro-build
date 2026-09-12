@@ -76,6 +76,7 @@ alter table public.subscriptions enable row level security;
 alter table public.transactions enable row level security;
 alter table public.notifications enable row level security;
 alter table public.rate_limit_events enable row level security;
+alter table public.password_reset_otps enable row level security;
 -- plans is public reference data (pricing/features shown pre-signup) — readable by anyone, writable by no one via the client.
 alter table public.plans enable row level security;
 -- templates is public reference data too (browsable pre-signup); only
@@ -139,6 +140,15 @@ create policy "project_integrations_all_own_project" on public.project_integrati
 -- service-role connection after an explicit ownership check.
 drop policy if exists "project_secrets_no_client_access" on public.project_secrets;
 create policy "project_secrets_no_client_access" on public.project_secrets
+  for all using (false) with check (false);
+
+-- Same "no client access at all" reasoning as project_secrets — a reset
+-- request is keyed by an email that may not even belong to the caller, so
+-- there's no meaningful per-row ownership check to write; every access
+-- goes through the service-role admin client from forgot/reset-password
+-- server actions only.
+drop policy if exists "password_reset_otps_no_client_access" on public.password_reset_otps;
+create policy "password_reset_otps_no_client_access" on public.password_reset_otps
   for all using (false) with check (false);
 
 drop policy if exists "usage_events_select_own" on public.usage_events;

@@ -127,7 +127,43 @@ export const profiles = pgTable("profiles", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
+  // Null until the welcome email (+ admin new-signup alert) has been sent
+  // for this account — the claim guard in notifications.ts's
+  // sendWelcomeIfNeeded() ("UPDATE ... WHERE welcomed_at IS NULL") makes
+  // that send idempotent even though it's called from two different signup
+  // paths (immediate-session email/password, and the shared OAuth/email-
+  // confirmation callback), since only one of them ever actually applies
+  // to a given signup.
+  welcomedAt: timestamp("welcomed_at", { withTimezone: true }),
 });
+
+// Not linked to `profiles`/`auth.users` by FK on purpose — a reset request
+// is keyed by the email the visitor typed, before we've decided (and must
+// never reveal, to avoid account enumeration) whether it actually belongs
+// to a real account. Every read/write goes through the service-role admin
+// client from server actions only — see rls.sql's no-client-access policy,
+// same pattern as project_secrets.
+export const passwordResetOtps = pgTable(
+  "password_reset_otps",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    email: text("email").notNull(),
+    // SHA-256 of the 4-digit code, never the code itself — the code is
+    // still low-entropy either way, but this at least means a DB read
+    // alone can't be replayed directly.
+    codeHash: text("code_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    // Failed verification attempts against THIS code — capped in the
+    // reset-password action (see MAX_OTP_ATTEMPTS) so a code can't be
+    // brute-forced within its own expiry window.
+    attempts: integer("attempts").notNull().default(0),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("password_reset_otps_email_idx").on(table.email, table.createdAt)],
+);
 
 // ---------------------------------------------------------------------------
 // Templates
