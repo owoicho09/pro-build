@@ -89,6 +89,34 @@ export async function getActiveBuildCount(supabase: SupabaseClient<Database>): P
   return count ?? 0;
 }
 
+// Generic sliding-window rate limiter for expensive endpoints that aren't
+// already covered by checkBuildAllowance above (spec §4D: publish, preview
+// refresh, attachment upload). `action` names the endpoint so each has its
+// own independent budget. Checks and records in one call — the caller
+// should treat `allowed: false` as a hard stop (no side effect performed),
+// and only call this once it's actually about to do the expensive work.
+export async function checkAndRecordRateLimit(
+  supabase: SupabaseClient<Database>,
+  input: { userId: string; action: string; windowMs: number; maxRequests: number },
+): Promise<{ allowed: true } | { allowed: false; reason: string }> {
+  const { count } = await supabase
+    .from("rate_limit_events")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", input.userId)
+    .eq("action", input.action)
+    .gte("created_at", new Date(Date.now() - input.windowMs).toISOString());
+
+  if ((count ?? 0) >= input.maxRequests) {
+    return {
+      allowed: false,
+      reason: "You're doing that a bit too fast. Please wait a moment and try again.",
+    };
+  }
+
+  await supabase.from("rate_limit_events").insert({ user_id: input.userId, action: input.action });
+  return { allowed: true };
+}
+
 export async function checkProjectCapacity(
   supabase: SupabaseClient<Database>,
   userId: string,

@@ -75,6 +75,7 @@ alter table public.credit_ledger enable row level security;
 alter table public.subscriptions enable row level security;
 alter table public.transactions enable row level security;
 alter table public.notifications enable row level security;
+alter table public.rate_limit_events enable row level security;
 -- plans is public reference data (pricing/features shown pre-signup) — readable by anyone, writable by no one via the client.
 alter table public.plans enable row level security;
 -- templates is public reference data too (browsable pre-signup); only
@@ -143,6 +144,15 @@ create policy "project_secrets_no_client_access" on public.project_secrets
 drop policy if exists "usage_events_select_own" on public.usage_events;
 create policy "usage_events_select_own" on public.usage_events
   for select using (user_id = auth.uid());
+
+-- Unlike usage_events/credit_ledger (system-managed, no client insert
+-- policy at all), rate_limit_events is written directly by the RLS-scoped
+-- client from inside the same server action it's gating (see usage.ts's
+-- checkAndRecordRateLimit) — so it needs both select and insert, scoped to
+-- the caller's own rows.
+drop policy if exists "rate_limit_events_all_own" on public.rate_limit_events;
+create policy "rate_limit_events_all_own" on public.rate_limit_events
+  for all using (user_id = auth.uid()) with check (user_id = auth.uid());
 
 drop policy if exists "credit_ledger_select_own" on public.credit_ledger;
 create policy "credit_ledger_select_own" on public.credit_ledger

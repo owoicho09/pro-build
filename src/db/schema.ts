@@ -284,6 +284,13 @@ export const builds = pgTable(
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    // Denormalized from projects.ownerId at insert time — the doc's admin
+    // spec explicitly wants "user id" on every build row, and it also
+    // backs `builds_one_active_per_user` below (a per-project id alone
+    // can't express a per-USER, cross-project constraint).
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "cascade" }),
     triggerMessageId: uuid("trigger_message_id").references(() => messages.id),
     v0MessageId: text("v0_message_id"),
     state: buildStateEnum("state").notNull().default("queued"),
@@ -292,10 +299,26 @@ export const builds = pgTable(
     tokensUsed: integer("tokens_used"),
     creditsCost: integer("credits_cost"),
     startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    // Null while a build is accepted/queued but hasn't actually been sent
+    // to v0 yet (waiting on a free MAX_CONCURRENT_BUILDS slot, or backing
+    // off after a provider-capacity error — see build-orchestrator.ts's
+    // dispatchBuild()); set the moment the real v0 kickoff/continue
+    // request goes out. Lets the dispatch loop tell "queued, still needs
+    // dispatching" apart from "queued/streaming, already sent" without a
+    // new enum state.
+    dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
+    // How many times dispatch has been attempted and hit provider capacity
+    // (HTTP 429) — bounds the retry-with-backoff loop so a persistently
+    // rate-limited build eventually fails instead of queuing forever, and
+    // paces retries (see MAX_DISPATCH_ATTEMPTS / dispatch backoff in
+    // build-orchestrator.ts).
+    dispatchAttempts: integer("dispatch_attempts").notNull().default(0),
+    lastDispatchAttemptAt: timestamp("last_dispatch_attempt_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
   (table) => [
     index("builds_project_id_idx").on(table.projectId),
+    index("builds_user_id_idx").on(table.userId),
     // Live-testing discovery: the app-level "is a build already running"
     // check and the build-row insert aren't atomic, so two near-simultaneous
     // requests (e.g. two open tabs) can both pass the check. This partial
@@ -305,6 +328,12 @@ export const builds = pgTable(
     // turns into the same friendly "already in progress" error.
     uniqueIndex("builds_one_active_per_project")
       .on(table.projectId)
+      .where(sql`${table.state} in ('queued', 'streaming')`),
+    // Same guarantee, scoped to the user instead of the project (spec
+    // §4B: "at most one active generation per user") — a user can only
+    // have one row across ALL of their projects in queued/streaming.
+    uniqueIndex("builds_one_active_per_user")
+      .on(table.userId)
       .where(sql`${table.state} in ('queued', 'streaming')`),
   ],
 );
@@ -388,6 +417,33 @@ export const projectSecrets = pgTable("project_secrets", {
     .notNull()
     .defaultNow(),
 });
+
+// ---------------------------------------------------------------------------
+// Load control
+// ---------------------------------------------------------------------------
+
+// Backs a plain sliding-window rate limiter (see usage.ts's
+// checkAndRecordRateLimit) for expensive endpoints that aren't already
+// covered by checkBuildAllowance's builds-per-hour check — publish,
+// preview refresh, attachment upload (spec §4D). One row per attempt;
+// `action` scopes the window per endpoint so they don't share a budget.
+// No external rate-limit service (e.g. Upstash) is configured, and this
+// beta's scale (10-30 users) doesn't need one — a plain indexed count
+// query is the same pattern already used elsewhere in this file.
+export const rateLimitEvents = pgTable(
+  "rate_limit_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "cascade" }),
+    action: text("action").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("rate_limit_events_user_action_idx").on(table.userId, table.action, table.createdAt)],
+);
 
 // ---------------------------------------------------------------------------
 // Usage / credits

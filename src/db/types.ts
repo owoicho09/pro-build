@@ -155,6 +155,7 @@ export interface Database {
         Row: {
           id: string;
           project_id: string;
+          user_id: string;
           trigger_message_id: string | null;
           v0_message_id: string | null;
           state: BuildState;
@@ -163,10 +164,14 @@ export interface Database {
           tokens_used: number | null;
           credits_cost: number | null;
           started_at: string;
+          dispatched_at: string | null;
+          dispatch_attempts: number;
+          last_dispatch_attempt_at: string | null;
           finished_at: string | null;
         };
         Insert: Partial<Database["public"]["Tables"]["builds"]["Row"]> & {
           project_id: string;
+          user_id: string;
         };
         Update: Partial<Database["public"]["Tables"]["builds"]["Row"]>;
         Relationships: [];
@@ -335,6 +340,20 @@ export interface Database {
           domain_name: string;
         };
         Update: Partial<Database["public"]["Tables"]["domains"]["Row"]>;
+        Relationships: [];
+      };
+      rate_limit_events: {
+        Row: {
+          id: string;
+          user_id: string;
+          action: string;
+          created_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["rate_limit_events"]["Row"]> & {
+          user_id: string;
+          action: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["rate_limit_events"]["Row"]>;
         Relationships: [];
       };
       notifications: {

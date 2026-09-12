@@ -66,9 +66,11 @@ const sendMessageSchema = z.object({
 
 const EXPECTED_ERRORS = [
   "A build is already in progress",
+  "You already have a build in progress",
   "You're out of build credits",
   "You've hit this project's build limit",
   "proBuild is at capacity right now",
+  "You're doing that a bit too fast",
 ];
 
 export async function sendProjectMessage(_prevState: unknown, formData: FormData) {

@@ -17,6 +17,14 @@ import { refreshPreviewAction } from "@/app/projects/[id]/actions";
 // void with an honest "this is loading" during the common case.
 const PREVIEW_BOOT_MS = 6000;
 
+// A generous ceiling past PREVIEW_BOOT_MS for the iframe's own `load` event
+// to fire at all — that event is a weak "did it render anything useful"
+// signal (see PREVIEW_BOOT_MS's comment) but a solid "did navigation even
+// complete" one. Never firing this long past the boot window is the
+// distinguishing case the spec calls "Preview is taking longer than
+// expected": a real stuck/broken load, not just v0's normal cold start.
+const PREVIEW_STUCK_MS = 20000;
+
 // Simulated viewport widths — the generated project itself is responsive;
 // this just lets the user check how it looks at each size without leaving
 // proBuild. Device controls resize the viewport INSIDE this canvas, not the
@@ -116,6 +124,34 @@ export function PreviewPane({
     return () => clearTimeout(timer);
   }, [isBooting, mountKey]);
 
+  // Tracks whether THIS mount's iframe has ever fired `load` — reset
+  // (render-time sync, same idiom as isBooting above) whenever the src
+  // actually changes, so a stale "loaded" from a previous URL never masks
+  // a genuinely stuck new one.
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [syncedLoadKey, setSyncedLoadKey] = useState(mountKey);
+  if (mountKey !== syncedLoadKey) {
+    setSyncedLoadKey(mountKey);
+    setHasLoaded(false);
+  }
+
+  // Distinct from isBooting: this only flips on if the iframe STILL hasn't
+  // loaded at all after a much longer window, which is what actually means
+  // "stuck" rather than "still in v0's normal cold-start window." Gated on
+  // `!hasLoaded` at the render site below rather than reset from inside
+  // this effect, so the effect only ever sets state on its own timer, never
+  // synchronously in response to `hasLoaded` changing.
+  const [isStuck, setIsStuck] = useState(false);
+  useEffect(() => {
+    if (hasLoaded) return;
+    const timer = setTimeout(() => setIsStuck(true), PREVIEW_STUCK_MS);
+    return () => clearTimeout(timer);
+  }, [hasLoaded, mountKey]);
+
+  function handleIframeLoad() {
+    setHasLoaded(true);
+  }
+
   return (
     <div className="flex h-full min-h-0 w-full flex-col">
       {previewUrl && (
@@ -149,6 +185,7 @@ export function PreviewPane({
               key={`${previewUrl}-${refreshNonce}`}
               src={previewUrl}
               title={`${title} preview`}
+              onLoad={handleIframeLoad}
               className="h-full w-full border-0 bg-background"
             />
           ) : (
@@ -157,6 +194,7 @@ export function PreviewPane({
                 key={`${previewUrl}-${refreshNonce}`}
                 src={previewUrl}
                 title={`${title} preview`}
+                onLoad={handleIframeLoad}
                 className={cn("border-0 bg-background", DEVICE_FRAME_CLASS[size])}
               />
             </div>
@@ -188,6 +226,40 @@ export function PreviewPane({
             <div className="flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground shadow-md">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand" />
               Loading preview...
+            </div>
+          </div>
+        )}
+        {/* Distinct from the boot overlay above: this only shows once the
+            iframe has genuinely failed to load at all for a long time, not
+            just during v0's normal cold-start window — build success and
+            iframe rendering are deliberately kept separate (spec: never
+            turn an iframe problem into a build failure), so this offers a
+            way forward without touching build/project status at all. */}
+        {previewUrl && !inProgress && !isBooting && isStuck && !hasLoaded && (
+          <div className="absolute inset-0 flex items-center justify-center bg-background/90 p-8">
+            <div className="flex max-w-xs flex-col items-center gap-3 rounded-xl border border-border bg-card px-4 py-4 text-center shadow-md">
+              <p className="text-sm font-medium">Preview is taking longer than expected</p>
+              <p className="text-xs text-muted-foreground">
+                Your site is published and working — the embedded preview here is just slow to load.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handleRefresh}
+                  disabled={isRefreshing}
+                  className="rounded-md border border-border px-3 py-1.5 text-xs font-medium hover:bg-border/40 disabled:opacity-60"
+                >
+                  {isRefreshing ? "Retrying..." : "Retry preview"}
+                </button>
+                <a
+                  href={previewUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-brand-foreground hover:opacity-90"
+                >
+                  Open preview
+                </a>
+              </div>
             </div>
           </div>
         )}

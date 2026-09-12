@@ -1,0 +1,405 @@
+We are preparing proBuild for a small public beta of roughly 10–30 users.
+
+Do not add new product features and do not work on billing yet.
+
+This is a launch-hardening pass.
+
+There are four critical areas to fix:
+
+1. PUBLIC PUBLISHING
+2. BUILD STATE RELIABILITY
+3. WORKSPACE PREVIEW RELIABILITY
+4. SYSTEM MONITORING + LOAD CONTROL
+
+
+==================================================
+1. FIX VERCEL PUBLIC PUBLISHING PERMANENTLY
+==================================================
+
+We have confirmed the following:
+
+- Team-level Vercel Authentication default is OFF.
+- But projects created through our v0/proBuild flow sometimes have project-level Vercel Authentication enabled.
+- Published links can therefore ask visitors to log in to Vercel.
+
+Do not rely on team defaults.
+
+Vercel officially supports disabling project-level Vercel Authentication by updating the project with:
+
+{
+  "ssoProtection": null
+}
+
+Inspect our current Vercel project creation/publish flow and the installed Vercel SDK/API.
+
+After the underlying Vercel project exists, explicitly ensure:
+
+ssoProtection = null
+
+for customer websites that are intended to be public.
+
+Do this programmatically for every relevant generated project.
+
+Do not guess API methods. Inspect current SDK/types or use the documented Vercel REST project update endpoint.
+
+
+PUBLISHED URL:
+
+Also inspect what URL we currently save as live_url.
+
+We must NOT expose a protected generated deployment URL as the public website.
+
+After publishing:
+
+- identify the production domain/alias
+- persist that as the project's live URL
+- do not use a preview URL or raw deployment-specific URL
+- verify the URL anonymously before marking the site Live
+
+Anonymous verification should:
+
+- request the URL without Vercel auth credentials
+- follow redirects carefully
+- detect Vercel login/auth redirects
+- confirm the actual website returns successfully
+
+Only after this succeeds should project status become Live.
+
+If verification fails:
+- do not lie that publishing succeeded
+- show a useful publishing error
+- retain deployment information for retry/debugging
+
+
+==================================================
+2. BUILD STATE MUST SURVIVE FRONTEND DISCONNECTS
+==================================================
+
+Current behavior:
+
+A build sometimes continues successfully in the background but the workspace UI appears to stop.
+
+The UI may sit on Draft or appear frozen, then later suddenly report completion.
+
+This suggests frontend state is losing synchronization with the actual build.
+
+Fix this architecturally.
+
+Build state must be persisted server-side.
+
+Use a clear lifecycle such as:
+
+queued
+building
+waiting_for_preview
+completed
+failed
+
+Persist at minimum:
+
+- build id
+- user id
+- project id
+- status
+- provider/v0 identifiers
+- started_at
+- updated_at
+- completed_at
+- error message/code
+- usage/cost where available
+
+The browser must NOT be the source of truth.
+
+On workspace load or refresh:
+
+- fetch the latest active build
+- if it is still running, immediately restore the correct UI state
+- continue polling/subscribing until completion/failure
+- if build completed while user was away, reconcile immediately
+
+Refreshing the page must not make the app forget an active build.
+
+
+==================================================
+3. WORKSPACE PREVIEW RELIABILITY
+==================================================
+
+Current issue:
+
+The website can be available when clicking "Open Preview", but the embedded workspace iframe may remain stuck on:
+
+- Updating preview
+- Loading preview
+- blank content
+
+This means build success and iframe rendering are being conflated.
+
+Separate them.
+
+Persist the latest known usable preview URL.
+
+When opening a workspace:
+
+- load the last known preview information immediately
+- request/resolve fresh v0 preview information asynchronously if needed
+- never clear a usable preview just because a refresh is occurring
+- do not repeatedly replace iframe src with the same URL
+- do not use endless loading states
+
+If the iframe has not rendered after a reasonable timeout:
+
+show:
+
+"Preview is taking longer than expected"
+
+with:
+- Retry preview
+- Open preview
+
+If the external URL works but iframe still fails:
+- project/build should remain successful
+- tell the user the embedded preview is unavailable
+- allow them to open the working preview externally
+
+Do NOT convert an iframe problem into a build failure.
+
+If a build creates a new preview:
+- update preview only when the new usable URL is available
+
+
+==================================================
+4. LOAD CONTROL FOR 10–30 USERS
+==================================================
+
+We are not trying to scale infinitely yet.
+
+We simply need to stop a small beta from overwhelming v0 or our own backend.
+
+Implement:
+
+A. ONE ACTIVE BUILD PER PROJECT
+
+A project should not start multiple concurrent builds accidentally.
+
+If a build is already active:
+- reject/queue the duplicate request
+- do not consume additional credits
+
+B. USER CONCURRENCY LIMIT
+
+Initially allow at most one active generation per user.
+
+C. GLOBAL BUILD CONCURRENCY
+
+Add a configurable global limit, e.g.
+
+MAX_CONCURRENT_BUILDS
+
+Default conservatively, around 3–5.
+
+If capacity is full:
+- put new builds in queued state
+- display queue state to the user
+- start them as slots become available
+
+Do not silently fail.
+
+D. RATE LIMITING
+
+Protect expensive endpoints:
+
+- project generation
+- continuation/edit
+- attachments if appropriate
+- preview refresh
+- publish
+
+Do not allow rapid repeated requests.
+
+E. 429 HANDLING
+
+v0 has already returned real 429 responses during testing.
+
+Treat this as provider capacity/rate limiting.
+
+Do not expose raw HTTP errors to normal users.
+
+Use a state such as:
+
+"Builder is busy. Your build will continue shortly."
+
+Retry with bounded exponential backoff where appropriate.
+
+Never retry infinitely.
+
+F. CREDIT ENFORCEMENT
+
+Billing is not being implemented yet.
+
+Existing credits remain the usage gate.
+
+Do not start generation if the user has insufficient credits.
+
+Failed/non-billable attempts should not consume credits.
+
+
+==================================================
+5. ADMIN / SYSTEM MONITORING
+==================================================
+
+I need visibility into what is happening when real users start using proBuild.
+
+Add or improve an internal admin monitoring screen.
+
+I should be able to see:
+
+SYSTEM OVERVIEW
+
+- active users/builders
+- queued builds
+- currently running builds
+- completed builds today
+- failed builds today
+- provider 429 count
+- total usage/cost if available
+- current global concurrency / max concurrency
+
+
+BUILD TABLE
+
+For every build show:
+
+- user
+- project
+- build status
+- queued time
+- start time
+- duration
+- provider/v0 chat/project id
+- preview status
+- deployment status
+- error
+- credits consumed
+- cost if available
+
+
+PROJECT DIAGNOSTICS
+
+From admin, I should be able to inspect a project and see:
+
+- current build
+- last successful build
+- latest preview URL
+- production/live URL
+- Vercel project id
+- whether production verification succeeded
+- latest error
+
+
+==================================================
+6. USER-FACING STATUS
+==================================================
+
+Users should always understand what is happening.
+
+Use explicit states such as:
+
+Queued
+Preparing build
+Building
+Starting preview
+Ready
+Publishing
+Live
+Builder busy
+Preview taking longer than expected
+Build failed
+
+Avoid a vague "Draft" state while a build is actually running.
+
+Do not fake progress percentages unless we have actual progress data.
+
+
+==================================================
+7. DO NOT IMPLEMENT BILLING
+==================================================
+
+Do not work on:
+
+- subscription plans
+- Paystack checkout
+- recurring billing
+- pricing page logic
+
+Existing credits are enough for this beta.
+
+
+==================================================
+8. TESTING REQUIRED
+==================================================
+
+Do not say this is fixed purely because typecheck passes.
+
+Test these scenarios:
+
+1. Start a build and refresh the workspace mid-build.
+   Expected:
+   UI reconnects to existing build and continues showing correct state.
+
+2. Close workspace and reopen while build is running.
+   Expected:
+   active build state returns correctly.
+
+3. Build completes while user is away.
+   Expected:
+   returning user immediately sees completed state.
+
+4. Preview loads slowly.
+   Expected:
+   app does not lose build state.
+
+5. Preview URL works externally but iframe fails.
+   Expected:
+   user can still open preview and project remains successful.
+
+6. Two build requests on same project.
+   Expected:
+   only one actual provider generation starts.
+
+7. Multiple users trigger builds.
+   Expected:
+   concurrency cap and queue work.
+
+8. v0 returns 429.
+   Expected:
+   controlled busy/retry state, not raw error.
+
+9. Publish a site.
+   Expected:
+   Vercel Authentication is disabled programmatically.
+
+10. Open returned live URL in a completely unauthenticated/private request.
+    Expected:
+    no Vercel login and website loads.
+
+11. Confirm stored live_url is the real public production domain/alias.
+
+
+==================================================
+9. REPORT BEFORE CLAIMING SUCCESS
+==================================================
+
+At the end report:
+
+- root cause of lost build-state UI
+- root cause of embedded preview failures
+- exact publish URL previously being stored
+- exact public URL now being stored
+- how ssoProtection is being disabled
+- queue/concurrency design
+- admin monitoring added
+- schema changes
+- files changed
+- tests actually performed
+
+Do not claim browser/runtime verification if it was not actually performed.

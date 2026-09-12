@@ -16,14 +16,30 @@ import { getBuilderEngine } from "@/lib/services";
 import { isTerminalFinishReason, BuilderCapacityError } from "@/lib/services/builder-engine";
 import { toSafeMessage } from "@/lib/utils/external-provider-error";
 import { usdToCredits } from "@/lib/config/credits";
-import { resolveAttachmentsForBuilder } from "@/lib/services/attachments";
-import { checkBuildAllowance } from "@/lib/services/usage";
+import { resolveAttachmentsForBuilder, linkAttachmentsToMessage } from "@/lib/services/attachments";
+import { checkBuildAllowance, checkAndRecordRateLimit } from "@/lib/services/usage";
+import { PREVIEW_REFRESH_RATE_LIMIT } from "@/lib/config/rate-limits";
 import { notifyUser } from "@/lib/services/notifications";
 import { captureAndStoreScreenshot } from "@/lib/services/screenshot";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { MAX_CONCURRENT_BUILDS, MAX_DISPATCH_ATTEMPTS } from "@/lib/config/concurrency";
 
 // A build that has been failing every status check for this long is treated
 // as stuck rather than transient — see the try/catch in advanceBuild().
 const STUCK_THRESHOLD_MS = 10 * 60 * 1000;
+
+// Bounded exponential backoff between dispatch retries after a provider
+// (v0) capacity/429 response — spec §4E: "retry with bounded exponential
+// backoff... never retry infinitely." Capped dispatchAttempts (see
+// MAX_DISPATCH_ATTEMPTS) bounds the total retry count; this bounds the
+// spacing between them so a 429 storm doesn't hammer v0 every few seconds
+// via the workspace's own 3s poll.
+const DISPATCH_BACKOFF_BASE_MS = 2000;
+const DISPATCH_BACKOFF_MAX_MS = 60_000;
+
+function dispatchBackoffMs(attempts: number): number {
+  return Math.min(DISPATCH_BACKOFF_BASE_MS * 2 ** Math.max(attempts - 1, 0), DISPATCH_BACKOFF_MAX_MS);
+}
 
 // ---------------------------------------------------------------------------
 // Trigger side — runs inside a user-authenticated server action, so it uses
@@ -31,12 +47,15 @@ const STUCK_THRESHOLD_MS = 10 * 60 * 1000;
 // created.
 // ---------------------------------------------------------------------------
 
-// Postgres unique_violation — see the `builds_one_active_per_project`
-// partial unique index in schema.ts.
+// Postgres unique_violation — see the `builds_one_active_per_project` /
+// `builds_one_active_per_user` partial unique indexes in schema.ts.
 const UNIQUE_VIOLATION = "23505";
 
 const ALREADY_IN_PROGRESS_MESSAGE =
   "A build is already in progress for this project. Wait for it to finish before sending another change.";
+
+const ALREADY_BUILDING_ELSEWHERE_MESSAGE =
+  "You already have a build in progress on another project. Wait for it to finish before starting a new one.";
 
 export async function startOrContinueBuild(
   supabase: SupabaseClient<Database>,
@@ -78,6 +97,21 @@ export async function startOrContinueBuild(
     throw new Error(ALREADY_IN_PROGRESS_MESSAGE);
   }
 
+  // Same fast-pre-check-not-real-guarantee pattern as above, scoped to the
+  // user across ALL of their projects (spec §4B: one active generation per
+  // user) — `builds_one_active_per_user` below is the actual guarantee.
+  const { data: activeBuildForUser } = await supabase
+    .from("builds")
+    .select("id")
+    .eq("user_id", project.owner_id)
+    .in("state", ["queued", "streaming"])
+    .limit(1)
+    .maybeSingle();
+
+  if (activeBuildForUser) {
+    throw new Error(ALREADY_BUILDING_ELSEWHERE_MESSAGE);
+  }
+
   const { data: userMessage, error: messageError } = await supabase
     .from("messages")
     .insert({ project_id: project.id, role: "user", content: input.prompt })
@@ -98,6 +132,7 @@ export async function startOrContinueBuild(
     .from("builds")
     .insert({
       project_id: project.id,
+      user_id: project.owner_id,
       trigger_message_id: userMessage.id,
       state: "queued",
     })
@@ -105,11 +140,42 @@ export async function startOrContinueBuild(
     .single();
 
   if (buildError?.code === UNIQUE_VIOLATION) {
-    throw new Error(ALREADY_IN_PROGRESS_MESSAGE);
+    throw new Error(
+      buildError.message.includes("builds_one_active_per_user")
+        ? ALREADY_BUILDING_ELSEWHERE_MESSAGE
+        : ALREADY_IN_PROGRESS_MESSAGE,
+    );
   }
   if (buildError || !build) {
     throw new Error("Couldn't start the build. Please try again.");
   }
+
+  // Durable and fast (no Storage calls yet, just a column update) — done
+  // synchronously so a build's attachments are always resolvable later
+  // purely from its trigger_message_id, regardless of whether dispatch
+  // happens immediately below or, under load, minutes from now via the
+  // cron-driven dispatch sweep (see dispatchBuild()). Best-effort: a
+  // failure here just means attachments won't be found at dispatch time,
+  // never worth failing the whole build over.
+  if (input.attachmentIds?.length) {
+    await linkAttachmentsToMessage(supabase, {
+      attachmentIds: input.attachmentIds,
+      messageId: userMessage.id,
+    }).catch((err) => console.error("Failed to link attachments to message", userMessage.id, err));
+  }
+
+  // Set synchronously, not only inside dispatchBuild's after() callback —
+  // otherwise a project list/dashboard card can briefly still show a
+  // pre-build badge (Draft/Preview ready) for the few seconds before
+  // dispatch actually runs, which is exactly the "vague Draft state while a
+  // build is actually running" the spec calls out (§6). Safe even if
+  // dispatch ends up queued rather than immediate: "Building" reads fine
+  // either way from outside the workspace, which shows the finer-grained
+  // queued/busy states itself (see workspace.tsx's BuildStatusCard).
+  await supabase
+    .from("projects")
+    .update({ status: "building", last_activity_at: new Date().toISOString() })
+    .eq("id", project.id);
 
   // Everything from here down is genuinely slow (attachment resolution
   // makes Storage signed-URL calls; the builder kickoff itself is the
@@ -120,77 +186,15 @@ export async function startOrContinueBuild(
   // state (workspace.tsx's polling picks it up once v0_message_id lands).
   // `after()` runs this once the response has already been sent — this is
   // the fix for "Sending..." blocking on v0's latency instead of just the
-  // fast DB writes above.
+  // fast DB writes above. dispatchBuild() itself re-fetches everything it
+  // needs by id (never trusts this closure's `project`/`input`), because
+  // it's the same function the cron-driven dispatch sweep calls later for
+  // builds that don't get a free concurrency slot immediately.
   after(async () => {
     try {
-      const { builderAttachments, skipped } = await resolveAttachmentsForBuilder(supabase, {
-        attachmentIds: input.attachmentIds ?? [],
-        messageId: userMessage.id,
-      });
-
-      if (skipped.length > 0) {
-        await supabase.from("messages").insert({
-          project_id: project.id,
-          role: "system",
-          content: `Couldn't use ${skipped.join(", ")} — that file type isn't supported yet. Everything else in your message was sent.`,
-        });
-      }
-
-      const engine = getBuilderEngine();
-      const handle =
-        project.v0_chat_id && project.v0_project_id
-          ? await engine.continueProject({
-              ref: {
-                externalProjectId: project.v0_project_id,
-                externalChatId: project.v0_chat_id,
-              },
-              prompt: input.prompt,
-              attachments: builderAttachments,
-            })
-          : await engine.startProject({
-              name: project.name,
-              prompt: input.prompt,
-              attachments: builderAttachments,
-            });
-
-      await supabase
-        .from("projects")
-        .update({
-          v0_project_id: handle.externalProjectId,
-          v0_chat_id: handle.externalChatId,
-          status: "building",
-          last_activity_at: new Date().toISOString(),
-        })
-        .eq("id", project.id);
-
-      await supabase
-        .from("builds")
-        .update({ v0_message_id: handle.externalMessageId })
-        .eq("id", build.id);
+      await dispatchBuild(build.id);
     } catch (err) {
-      // The project's own status is left untouched here on purpose — if it
-      // already had a working preview, a failed follow-up kickoff shouldn't
-      // regress it. Only this specific build attempt is marked failed.
-      // error_code distinguishes "v0 is at capacity" (transient, safe to
-      // retry shortly) from every other kickoff failure, so the UI can show
-      // different copy for each rather than one generic failure message.
-      // error_message is rendered UNGUARDED in workspace.tsx (no allowlist,
-      // unlike sendProjectMessage's inline error) — toSafeMessage is the
-      // only thing standing between a raw provider error and that bubble,
-      // so every write to this column must go through it.
-      console.error("Deferred build kickoff failed", build.id, err);
-      await supabase
-        .from("builds")
-        .update({
-          state: "failed",
-          error_code: err instanceof BuilderCapacityError ? "provider_capacity" : null,
-          error_message: toSafeMessage(
-            err,
-            "That change failed to build. Your project is unaffected — try rephrasing it.",
-          ),
-          finished_at: new Date().toISOString(),
-        })
-        .eq("id", build.id);
+      console.error("Deferred dispatch threw unexpectedly", build.id, err);
     }
   });
 
@@ -233,6 +237,179 @@ async function markBuildStuck(
   }).catch((notifyErr) => console.error("Failed to notify user of stuck build", buildId, notifyErr));
 }
 
+// Sends a queued build's prompt to v0 for the first time — the actual
+// "kickoff" work that startOrContinueBuild's after() block used to do
+// inline. Pulled out on its own and made re-callable by (buildId) alone,
+// using the service-role admin client rather than a request-scoped one,
+// because it's now ALSO called from the cron-driven dispatch sweep
+// (advanceBuild below, via advancePendingBuilds) for a build that didn't
+// get a free MAX_CONCURRENT_BUILDS slot the first time — see spec §4C.
+// Idempotent/self-guarding: safe to call repeatedly on the same build, and
+// a no-op once it's already been dispatched or reached a terminal state.
+export async function dispatchBuild(buildId: string): Promise<void> {
+  const admin = createAdminClient();
+
+  const { data: build } = await admin.from("builds").select("*").eq("id", buildId).single();
+  if (!build || build.state !== "queued" || build.dispatched_at) {
+    return;
+  }
+
+  // Bounded exponential backoff between retries after a provider-capacity
+  // error — only applies once there's been at least one prior attempt; a
+  // build's very first dispatch attempt is never delayed by this.
+  if (build.dispatch_attempts > 0 && build.last_dispatch_attempt_at) {
+    const elapsedMs = Date.now() - new Date(build.last_dispatch_attempt_at).getTime();
+    if (elapsedMs < dispatchBackoffMs(build.dispatch_attempts)) {
+      return;
+    }
+  }
+
+  // Global concurrency gate (spec §4C) — count builds that are actually
+  // occupying a slot (already sent to v0), not just "queued" in the
+  // broader sense that also includes builds waiting right here for a slot.
+  const { count: activeDispatchedCount } = await admin
+    .from("builds")
+    .select("id", { count: "exact", head: true })
+    .in("state", ["queued", "streaming"])
+    .not("dispatched_at", "is", null);
+
+  if ((activeDispatchedCount ?? 0) >= MAX_CONCURRENT_BUILDS) {
+    // Stay queued — this doesn't count as a dispatch attempt (we never
+    // actually called v0), so dispatch_attempts/backoff are untouched. The
+    // next cron tick (or client poll, if the tab happens to be open) tries
+    // again.
+    return;
+  }
+
+  const { data: project } = await admin.from("projects").select("*").eq("id", build.project_id).single();
+  if (!project) return;
+
+  if (!build.trigger_message_id) {
+    await admin
+      .from("builds")
+      .update({
+        state: "failed",
+        error_message: "This build has no associated message to send.",
+        finished_at: new Date().toISOString(),
+      })
+      .eq("id", buildId);
+    return;
+  }
+
+  const { data: triggerMessage } = await admin
+    .from("messages")
+    .select("content")
+    .eq("id", build.trigger_message_id)
+    .single();
+  if (!triggerMessage) return;
+
+  const nowIso = new Date().toISOString();
+
+  try {
+    const { data: attachmentRows } = await admin
+      .from("attachments")
+      .select("id")
+      .eq("message_id", build.trigger_message_id);
+
+    const { builderAttachments, skipped } = await resolveAttachmentsForBuilder(admin, {
+      attachmentIds: (attachmentRows ?? []).map((row) => row.id),
+      messageId: build.trigger_message_id,
+    });
+
+    // Only worth telling the user once — every retry after the first
+    // dispatch attempt would otherwise repeat the same notice.
+    if (skipped.length > 0 && build.dispatch_attempts === 0) {
+      await admin.from("messages").insert({
+        project_id: project.id,
+        role: "system",
+        content: `Couldn't use ${skipped.join(", ")} — that file type isn't supported yet. Everything else in your message was sent.`,
+      });
+    }
+
+    const engine = getBuilderEngine();
+    const handle =
+      project.v0_chat_id && project.v0_project_id
+        ? await engine.continueProject({
+            ref: {
+              externalProjectId: project.v0_project_id,
+              externalChatId: project.v0_chat_id,
+            },
+            prompt: triggerMessage.content,
+            attachments: builderAttachments,
+          })
+        : await engine.startProject({
+            name: project.name,
+            prompt: triggerMessage.content,
+            attachments: builderAttachments,
+          });
+
+    await admin
+      .from("projects")
+      .update({
+        v0_project_id: handle.externalProjectId,
+        v0_chat_id: handle.externalChatId,
+        status: "building",
+        last_activity_at: nowIso,
+      })
+      .eq("id", project.id);
+
+    await admin
+      .from("builds")
+      .update({
+        v0_message_id: handle.externalMessageId,
+        dispatched_at: nowIso,
+        last_dispatch_attempt_at: nowIso,
+        error_code: null,
+      })
+      .eq("id", buildId);
+  } catch (err) {
+    // The project's own status is left untouched here on purpose — if it
+    // already had a working preview, a failed follow-up kickoff shouldn't
+    // regress it. Only this specific build attempt is marked failed.
+    // error_message is rendered UNGUARDED in workspace.tsx (no allowlist,
+    // unlike sendProjectMessage's inline error) — toSafeMessage is the
+    // only thing standing between a raw provider error and that bubble,
+    // so every write to this column must go through it.
+    console.error("Dispatch failed for build", buildId, err);
+    const attempts = build.dispatch_attempts + 1;
+
+    if (err instanceof BuilderCapacityError && attempts < MAX_DISPATCH_ATTEMPTS) {
+      // Stay queued and retry later (bounded — see dispatchBackoffMs above
+      // and MAX_DISPATCH_ATTEMPTS) instead of failing outright. This is
+      // the "Builder is busy. Your build will continue shortly." case
+      // (spec §4E) — workspace.tsx renders it from error_code + state
+      // still being "queued", not as a failure.
+      await admin
+        .from("builds")
+        .update({ dispatch_attempts: attempts, last_dispatch_attempt_at: nowIso, error_code: "provider_capacity" })
+        .eq("id", buildId);
+      return;
+    }
+
+    await admin
+      .from("builds")
+      .update({
+        state: "failed",
+        error_code: err instanceof BuilderCapacityError ? "provider_capacity" : null,
+        error_message: toSafeMessage(
+          err,
+          "That change failed to build. Your project is unaffected — try rephrasing it.",
+        ),
+        dispatch_attempts: attempts,
+        last_dispatch_attempt_at: nowIso,
+        finished_at: nowIso,
+      })
+      .eq("id", buildId);
+
+    await notifyUser({
+      userId: project.owner_id,
+      projectId: project.id,
+      projectName: project.name,
+      type: "build_failed",
+    }).catch((notifyErr) => console.error("Failed to notify user of dispatch failure", buildId, notifyErr));
+  }
+}
+
 export async function advanceBuild(buildId: string): Promise<void> {
   const build = await db.query.builds.findFirst({
     where: eq(builds.id, buildId),
@@ -243,6 +420,11 @@ export async function advanceBuild(buildId: string): Promise<void> {
   }
 
   if (!build.v0MessageId) {
+    // Not dispatched yet — either still waiting for a free
+    // MAX_CONCURRENT_BUILDS slot, or backing off after a provider-capacity
+    // error (see dispatchBuild's backoff gate, which no-ops if it's not
+    // time to retry yet). Nothing else to check until it has a message id.
+    await dispatchBuild(buildId);
     return;
   }
 
@@ -459,7 +641,7 @@ export async function refreshProjectPreview(
 ): Promise<{ previewUrl: string | null }> {
   const { data: project, error } = await supabase
     .from("projects")
-    .select("v0_project_id, v0_chat_id")
+    .select("owner_id, v0_project_id, v0_chat_id")
     .eq("id", input.projectId)
     .single();
 
@@ -468,6 +650,15 @@ export async function refreshProjectPreview(
   }
   if (!project.v0_project_id || !project.v0_chat_id) {
     return { previewUrl: null };
+  }
+
+  const rateLimit = await checkAndRecordRateLimit(supabase, {
+    userId: project.owner_id,
+    action: "preview_refresh",
+    ...PREVIEW_REFRESH_RATE_LIMIT,
+  });
+  if (!rateLimit.allowed) {
+    throw new Error(rateLimit.reason);
   }
 
   const preview = await getBuilderEngine().getPreview({

@@ -68,9 +68,16 @@ function BuildStep({ label, status }: { label: string; status: StepStatus }) {
 function BuildStatusCard({
   buildState,
   longRunningNotice,
+  isBusy,
 }: {
   buildState: "sending" | Build["state"];
   longRunningNotice: string | null;
+  // True while this build is queued specifically because v0 itself
+  // returned a capacity/429 response and dispatch is retrying with backoff
+  // (see build-orchestrator.ts's dispatchBuild) — distinct from ordinary
+  // queueing, and from a real failure (spec §4E/§6: "Builder busy" is its
+  // own explicit state, never a generic failure).
+  isBusy?: boolean;
 }) {
   const steps: { label: string; status: StepStatus }[] = [
     { label: "Request received", status: buildState === "sending" ? "current" : "done" },
@@ -86,7 +93,9 @@ function BuildStatusCard({
 
   return (
     <div className="mr-auto max-w-[85%] space-y-2.5 rounded-2xl border border-border bg-card px-4 py-3 shadow-sm">
-      <p className="text-sm font-medium">Building your project</p>
+      <p className="text-sm font-medium">
+        {isBusy ? "Builder is busy. Your build will continue shortly." : "Building your project"}
+      </p>
       <div className="space-y-1.5">
         {steps.map((step) => (
           <BuildStep key={step.label} label={step.label} status={step.status} />
@@ -404,7 +413,11 @@ export function Workspace({
             );
           })}
           {displayBuildState && (
-            <BuildStatusCard buildState={displayBuildState} longRunningNotice={longRunningNotice} />
+            <BuildStatusCard
+              buildState={displayBuildState}
+              longRunningNotice={longRunningNotice}
+              isBusy={build?.state === "queued" && build.error_code === "provider_capacity"}
+            />
           )}
           {build?.state === "failed" && !pending && (
             <div

@@ -1,6 +1,7 @@
 import "server-only";
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
+import { MAX_CONCURRENT_BUILDS } from "@/lib/config/concurrency";
 
 // All of these are read-only, cross-user views — they need to bypass RLS
 // on purpose (an admin looking at "all users' credit balances" is exactly
@@ -24,15 +25,6 @@ export type AdminProjectRow = {
   status: string;
   production_url: string | null;
   last_activity_at: string;
-  owner_email: string;
-}
-
-export type AdminFailedBuildRow = {
-  id: string;
-  error_message: string | null;
-  started_at: string;
-  finished_at: string | null;
-  project_name: string;
   owner_email: string;
 }
 
@@ -64,6 +56,52 @@ export type AdminTopConsumerRow = {
   email: string;
   total_cost: number;
 }
+
+export type AdminSystemOverview = {
+  queued_builds: number;
+  running_builds: number;
+  completed_today: number;
+  failed_today: number;
+  provider_429_today: number;
+  active_builders: number;
+  current_concurrency: number;
+  max_concurrency: number;
+};
+
+export type AdminBuildRow = {
+  id: string;
+  owner_email: string;
+  project_name: string;
+  project_id: string;
+  state: string;
+  error_code: string | null;
+  error_message: string | null;
+  queued_at: string;
+  dispatched_at: string | null;
+  finished_at: string | null;
+  duration_seconds: number | null;
+  v0_project_id: string | null;
+  v0_chat_id: string | null;
+  preview_status: string;
+  deployment_status: string;
+  credits_cost: number | null;
+};
+
+export type AdminProjectDiagnostics = {
+  id: string;
+  name: string;
+  owner_email: string;
+  status: string;
+  vercel_project_id: string | null;
+  preview_url: string | null;
+  production_url: string | null;
+  current_build_id: string | null;
+  current_build_state: string | null;
+  current_build_error: string | null;
+  last_successful_build_id: string | null;
+  last_successful_build_at: string | null;
+  latest_error: string | null;
+} | null;
 
 export async function getAdminUsers(): Promise<AdminUserRow[]> {
   const result = await db.execute<AdminUserRow>(sql`
@@ -105,18 +143,112 @@ export async function getAdminCreditLiability(): Promise<number> {
   return Number(result.rows[0]?.total_liability ?? 0);
 }
 
-export async function getAdminFailedBuilds(): Promise<AdminFailedBuildRow[]> {
-  const result = await db.execute<AdminFailedBuildRow>(sql`
-    select b.id, b.error_message, b.started_at, b.finished_at,
-      pr.name as project_name, u.email as owner_email
+// Powers the admin "System overview" strip (spec §5) — a snapshot of what
+// the load-control machinery in build-orchestrator.ts / concurrency.ts is
+// actually doing right now, not historical analytics.
+export async function getAdminSystemOverview(): Promise<AdminSystemOverview> {
+  const result = await db.execute<{
+    queued_builds: number;
+    running_builds: number;
+    completed_today: number;
+    failed_today: number;
+    provider_429_today: number;
+    active_builders: number;
+  }>(sql`
+    select
+      count(*) filter (where b.state = 'queued' and b.dispatched_at is null)::int as queued_builds,
+      count(*) filter (where b.state in ('queued', 'streaming') and b.dispatched_at is not null)::int as running_builds,
+      count(*) filter (where b.state = 'succeeded' and b.finished_at >= date_trunc('day', now()))::int as completed_today,
+      count(*) filter (where b.state = 'failed' and b.finished_at >= date_trunc('day', now()))::int as failed_today,
+      count(*) filter (where b.error_code = 'provider_capacity' and coalesce(b.last_dispatch_attempt_at, b.started_at) >= date_trunc('day', now()))::int as provider_429_today,
+      count(distinct b.user_id) filter (where b.state in ('queued', 'streaming'))::int as active_builders
+    from builds b
+  `);
+  const row = result.rows[0];
+  const currentConcurrency = Number(row?.running_builds ?? 0);
+  return {
+    queued_builds: Number(row?.queued_builds ?? 0),
+    running_builds: currentConcurrency,
+    completed_today: Number(row?.completed_today ?? 0),
+    failed_today: Number(row?.failed_today ?? 0),
+    provider_429_today: Number(row?.provider_429_today ?? 0),
+    active_builders: Number(row?.active_builders ?? 0),
+    current_concurrency: currentConcurrency,
+    max_concurrency: MAX_CONCURRENT_BUILDS,
+  };
+}
+
+// Full build table (spec §5's "BUILD TABLE") — every build regardless of
+// outcome (failed ones included), replacing an earlier failed-only view.
+export async function getAdminBuildTable(): Promise<AdminBuildRow[]> {
+  const result = await db.execute<AdminBuildRow>(sql`
+    select
+      b.id,
+      u.email as owner_email,
+      pr.name as project_name,
+      pr.id as project_id,
+      b.state,
+      b.error_code,
+      b.error_message,
+      b.started_at as queued_at,
+      b.dispatched_at,
+      b.finished_at,
+      extract(epoch from (coalesce(b.finished_at, now()) - b.dispatched_at))::int as duration_seconds,
+      pr.v0_project_id,
+      pr.v0_chat_id,
+      case when pr.preview_url is not null then 'ready' else 'none' end as preview_status,
+      case when pr.status = 'live' then 'live' when pr.production_url is not null then 'published' else 'not published' end as deployment_status,
+      b.credits_cost
     from builds b
     join projects pr on pr.id = b.project_id
-    join auth.users u on u.id = pr.owner_id
-    where b.state = 'failed'
+    join auth.users u on u.id = b.user_id
     order by b.started_at desc
-    limit 20
+    limit 50
   `);
   return result.rows;
+}
+
+// Single-project inspection (spec §5's "PROJECT DIAGNOSTICS") — looked up
+// by id from the admin page's project table, not its own route, per spec
+// §51's "do not spend excessive development time creating a huge admin
+// product."
+export async function getAdminProjectDiagnostics(projectId: string): Promise<AdminProjectDiagnostics> {
+  const result = await db.execute<NonNullable<AdminProjectDiagnostics>>(sql`
+    select
+      pr.id,
+      pr.name,
+      u.email as owner_email,
+      pr.status,
+      pr.vercel_project_id,
+      pr.preview_url,
+      pr.production_url,
+      current_build.id as current_build_id,
+      current_build.state as current_build_state,
+      current_build.error_message as current_build_error,
+      last_success.id as last_successful_build_id,
+      last_success.finished_at as last_successful_build_at,
+      last_failure.error_message as latest_error
+    from projects pr
+    join auth.users u on u.id = pr.owner_id
+    left join lateral (
+      select id, state, error_message from builds
+      where project_id = pr.id and state in ('queued', 'streaming')
+      order by started_at desc limit 1
+    ) current_build on true
+    left join lateral (
+      select id, finished_at from builds
+      where project_id = pr.id and state = 'succeeded'
+      order by finished_at desc limit 1
+    ) last_success on true
+    left join lateral (
+      select error_message from builds
+      where project_id = pr.id and state = 'failed'
+      order by finished_at desc limit 1
+    ) last_failure on true
+    where pr.id = ${projectId}
+    limit 1
+  `);
+  return result.rows[0] ?? null;
 }
 
 export async function getAdminDeployments(): Promise<AdminDeploymentRow[]> {

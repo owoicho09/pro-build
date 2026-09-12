@@ -50,6 +50,27 @@
       "when": 1789166175037,
       "tag": "0006_exotic_mac_gargan",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789226383377,
+      "tag": "0007_glorious_scream",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789226565465,
+      "tag": "0008_sparkling_moondragon",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789226944109,
+      "tag": "0009_sticky_grim_reaper",
+      "breakpoints": true
     }
   ]
 }

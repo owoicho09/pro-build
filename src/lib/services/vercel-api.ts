@@ -21,17 +21,15 @@ const REQUEST_TIMEOUT_MS = 20_000;
 // `DeploymentDetail.webUrl`, and Vercel's own deployment schema, where the
 // equivalent field is documented as "the unique URL of the deployment").
 //
-// ensureProductionProtectionIsPublic() is a narrower, non-destructive
-// second line of defense: it only touches the project's protection setting
-// if that setting currently covers production ("all" or
-// "prod_deployment_urls_and_all_previews"), narrowing it to
-// "preview"-only — which per Vercel's docs explicitly excludes both
-// production's deployment URL and its alias. It never removes protection
-// that wasn't covering production in the first place, and never sets
-// protection where none existed — deliberately not the old
-// `ssoProtection: null` approach, since that would also strip protection
-// from real preview deployments, which the product spec says may stay
-// protected.
+// ensureProductionProtectionIsPublic() unconditionally clears the
+// project's Vercel Authentication (`ssoProtection: null`) — per product
+// decision, every generated customer site in this beta is meant to be
+// fully public with no Vercel login wall anywhere, preview deployments
+// included. This is a deliberate change from an earlier, narrower
+// approach that only unprotected production while leaving preview
+// deployments gated; that trade-off was rejected in favor of matching the
+// literal, simpler "disable protection for the project" behavior Vercel's
+// docs describe for `ssoProtection: null`.
 //
 // GET /v13/deployments/{id} and the ssoProtection shape below are both
 // confirmed against Vercel's current REST API reference docs, not guessed.
@@ -75,32 +73,6 @@ export async function ensureProductionProtectionIsPublic(
     return { adjusted: false, reason: "VERCEL_ACCESS_TOKEN is not configured." };
   }
 
-  const getResponse = await withTimeout(
-    fetch(apiUrl(`/v9/projects/${vercelProjectId}`), {
-      headers: { Authorization: `Bearer ${token}` },
-    }),
-    REQUEST_TIMEOUT_MS,
-    "Timed out reading deployment protection settings.",
-  );
-  if (!getResponse.ok) {
-    return {
-      adjusted: false,
-      reason: `Vercel API returned ${getResponse.status} reading project settings.`,
-    };
-  }
-
-  const project = (await getResponse.json()) as {
-    ssoProtection?: { deploymentType: string } | null;
-  };
-  const coversProduction =
-    project.ssoProtection?.deploymentType === "all" ||
-    project.ssoProtection?.deploymentType === "prod_deployment_urls_and_all_previews";
-  if (!coversProduction) {
-    // Already "preview"-only, or unset entirely — production is already
-    // public, nothing to narrow, and nothing to add.
-    return { adjusted: false };
-  }
-
   const patchResponse = await withTimeout(
     fetch(apiUrl(`/v9/projects/${vercelProjectId}`), {
       method: "PATCH",
@@ -108,7 +80,7 @@ export async function ensureProductionProtectionIsPublic(
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ ssoProtection: { deploymentType: "preview" } }),
+      body: JSON.stringify({ ssoProtection: null }),
     }),
     REQUEST_TIMEOUT_MS,
     "Timed out updating deployment protection settings.",

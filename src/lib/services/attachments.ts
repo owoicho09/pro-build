@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database, AttachmentKind } from "@/db/types";
 import type { BuilderAttachment } from "./builder-engine";
+import { checkAndRecordRateLimit } from "./usage";
+import { ATTACHMENT_UPLOAD_RATE_LIMIT } from "@/lib/config/rate-limits";
 
 const BUCKET = "attachments";
 const SIGNED_URL_TTL_SECONDS = 60 * 10; // long enough for v0 to fetch it
@@ -113,6 +115,19 @@ export async function uploadAttachmentsFromFormData(
     .filter((entry): entry is File => entry instanceof File && entry.size > 0)
     .slice(0, MAX_ATTACHMENTS_PER_MESSAGE);
 
+  if (files.length === 0) {
+    return [];
+  }
+
+  const rateLimit = await checkAndRecordRateLimit(supabase, {
+    userId: input.ownerId,
+    action: "attachment_upload",
+    ...ATTACHMENT_UPLOAD_RATE_LIMIT,
+  });
+  if (!rateLimit.allowed) {
+    throw new Error(rateLimit.reason);
+  }
+
   const ids: string[] = [];
   for (const file of files) {
     const uploaded = await uploadAttachment(supabase, {
@@ -125,6 +140,26 @@ export async function uploadAttachmentsFromFormData(
     }
   }
   return ids;
+}
+
+// Durably associates attachments with the message that will trigger a
+// build — done synchronously at send time (before the build is even
+// queued/dispatched), decoupled from resolveAttachmentsForBuilder's actual
+// classification/signed-URL work below. This lets a build's attachments be
+// looked up later purely from its trigger_message_id — necessary because
+// dispatch (see build-orchestrator.ts's dispatchBuild) can now happen well
+// after the original request, from a cron tick with no attachmentIds in
+// scope, using a service-role client instead of the original request's
+// RLS-scoped one.
+export async function linkAttachmentsToMessage(
+  supabase: SupabaseClient<Database>,
+  input: { attachmentIds: string[]; messageId: string },
+): Promise<void> {
+  if (input.attachmentIds.length === 0) return;
+  await supabase
+    .from("attachments")
+    .update({ message_id: input.messageId })
+    .in("id", input.attachmentIds);
 }
 
 // Resolves usable attachments into the {url} shape v0's attachments API

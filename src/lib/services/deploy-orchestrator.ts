@@ -8,6 +8,8 @@ import {
   verifyPublicUrl,
 } from "@/lib/services/vercel-api";
 import { notifyUser } from "@/lib/services/notifications";
+import { checkAndRecordRateLimit } from "@/lib/services/usage";
+import { PUBLISH_RATE_LIMIT } from "@/lib/config/rate-limits";
 
 // v0's deploy() call is a single request/response — confirmed live: no
 // separate polling needed, `webUrl` comes back once the call resolves (see
@@ -29,6 +31,15 @@ export async function publishProject(
 
   if (!project.v0_chat_id || !project.v0_project_id) {
     throw new Error("This project hasn't been built yet — nothing to publish.");
+  }
+
+  const rateLimit = await checkAndRecordRateLimit(supabase, {
+    userId: project.owner_id,
+    action: "publish",
+    ...PUBLISH_RATE_LIMIT,
+  });
+  if (!rateLimit.allowed) {
+    throw new Error(rateLimit.reason);
   }
 
   const engine = getBuilderEngine();
@@ -76,30 +87,57 @@ export async function publishProject(
     console.error("Failed to resolve production alias for", result.deploymentId, err);
   }
 
-  // Best-effort, non-destructive: only narrows protection that currently
-  // covers production ("all" / "prod_deployment_urls_and_all_previews") to
-  // preview-only — never removes protection from real preview deployments,
-  // and never introduces protection where none existed. See vercel-api.ts.
-  try {
-    await ensureProductionProtectionIsPublic(result.vercelProjectId);
-  } catch (err) {
-    console.error("Failed to scope deployment protection to preview-only for", result.vercelProjectId, err);
+  // Best-effort attempt to fully disable the project's Vercel
+  // Authentication (see vercel-api.ts) — its outcome doesn't gate anything
+  // by itself; verifyPublicUrl below is the actual, load-bearing check.
+  const protectionResult = await ensureProductionProtectionIsPublic(result.vercelProjectId).catch(
+    (err: unknown) => {
+      console.error("Failed to clear deployment protection for", result.vercelProjectId, err);
+      return { adjusted: false, reason: "Threw while updating protection settings." };
+    },
+  );
+  if (!protectionResult.adjusted) {
+    console.error(
+      "Could not confirm deployment protection was cleared for",
+      result.vercelProjectId,
+      protectionResult.reason,
+    );
   }
 
   // Never speculate about a protection wall — confirm it with a real,
   // unauthenticated request to the URL we're about to show/save. A failed
   // verification (timeout, network error) is "couldn't confirm," not
-  // evidence of protection, and never produces a warning on its own.
-  let publicWarning: string | undefined;
-  try {
-    const verification = await verifyPublicUrl(publicUrl);
-    if (verification.requiresVercelAuth) {
-      publicWarning =
-        "This link is currently asking visitors to sign in to Vercel before it loads. We've adjusted the project's protection settings — if this doesn't clear up shortly, contact support.";
-      console.error("Published URL still requires Vercel auth", publicUrl);
-    }
-  } catch (err) {
-    console.error("Failed to verify published URL is public", publicUrl, err);
+  // evidence of protection, so it doesn't block going live on its own —
+  // but a DEFINITIVE "this redirected to a Vercel login" signal must never
+  // be quietly downgraded to a warning while still calling the site live
+  // (spec: "Only after this succeeds should project status become Live" /
+  // "do not lie that publishing succeeded").
+  const verification = await verifyPublicUrl(publicUrl);
+
+  if (verification.requiresVercelAuth) {
+    console.error("Published URL still requires Vercel auth after publish", publicUrl);
+    // Retained for retry/debugging (spec), but never marked as the
+    // project's current production deployment — the existing production
+    // deployment (if any) and the project's own status/production_url are
+    // left completely untouched, same guarantee as a failed engine.deploy().
+    await supabase.from("deployments").insert({
+      project_id: project.id,
+      vercel_deployment_id: result.deploymentId,
+      target: "production",
+      ready_state: "error",
+      url: publicUrl,
+      is_current_production: false,
+    });
+    const err = new Error(
+      "We published this version, but the link is still asking visitors to sign in to Vercel instead of showing your site. Your previous live version (if any) is unaffected — please try publishing again in a minute, or contact support if this keeps happening.",
+    );
+    await notifyUser({
+      userId: project.owner_id,
+      projectId: project.id,
+      projectName: project.name,
+      type: "deployment_failed",
+    }).catch((notifyErr) => console.error("Failed to notify user of deploy failure", project.id, notifyErr));
+    throw err;
   }
 
   const nowIso = new Date().toISOString();
@@ -150,6 +188,14 @@ export async function publishProject(
     type: "deployment_completed",
     payload: { url: publicUrl },
   }).catch((err) => console.error("Failed to notify user of deploy success", project.id, err));
+
+  // verification.verified can still be false here (an inconclusive
+  // timeout/network hiccup checking our own request, not evidence of
+  // protection) — that's the one case still worth a soft warning rather
+  // than a hard failure, since the link may well be fine.
+  const publicWarning = !verification.verified
+    ? "We couldn't confirm this link is fully public yet (the check itself timed out) — it's live, but worth opening once to double-check."
+    : undefined;
 
   return { url: publicUrl, publicWarning };
 }
