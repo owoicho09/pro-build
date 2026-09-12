@@ -68,16 +68,16 @@ function BuildStep({ label, status }: { label: string; status: StepStatus }) {
 function BuildStatusCard({
   buildState,
   longRunningNotice,
-  isBusy,
+  statusOverride,
 }: {
   buildState: "sending" | Build["state"];
   longRunningNotice: string | null;
-  // True while this build is queued specifically because v0 itself
-  // returned a capacity/429 response and dispatch is retrying with backoff
-  // (see build-orchestrator.ts's dispatchBuild) — distinct from ordinary
-  // queueing, and from a real failure (spec §4E/§6: "Builder busy" is its
-  // own explicit state, never a generic failure).
-  isBusy?: boolean;
+  // Replaces the generic "Building your project" header for a specific,
+  // honest reason the build is still in progress — e.g. provider capacity
+  // (spec §4E/§6: "Builder busy" is its own explicit state, never a generic
+  // failure) or an automatic styling repair in progress (never invented
+  // fake progress, just a truer label for what's actually happening).
+  statusOverride?: string;
 }) {
   const steps: { label: string; status: StepStatus }[] = [
     { label: "Request received", status: buildState === "sending" ? "current" : "done" },
@@ -93,9 +93,7 @@ function BuildStatusCard({
 
   return (
     <div className="mr-auto max-w-[85%] space-y-2.5 rounded-2xl border border-border bg-card px-4 py-3 shadow-sm">
-      <p className="text-sm font-medium">
-        {isBusy ? "Builder is busy. Your build will continue shortly." : "Building your project"}
-      </p>
+      <p className="text-sm font-medium">{statusOverride ?? "Building your project"}</p>
       <div className="space-y-1.5">
         {steps.map((step) => (
           <BuildStep key={step.label} label={step.label} status={step.status} />
@@ -416,7 +414,13 @@ export function Workspace({
             <BuildStatusCard
               buildState={displayBuildState}
               longRunningNotice={longRunningNotice}
-              isBusy={build?.state === "queued" && build.error_code === "provider_capacity"}
+              statusOverride={
+                build?.state === "queued" && build.error_code === "provider_capacity"
+                  ? "Builder is busy. Your build will continue shortly."
+                  : build?.state === "streaming" && build.repair_attempts > 0
+                    ? "Fixing a styling issue automatically..."
+                    : undefined
+              }
             />
           )}
           {build?.state === "failed" && !pending && (

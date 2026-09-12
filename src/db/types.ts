@@ -167,6 +167,8 @@ export interface Database {
           dispatched_at: string | null;
           dispatch_attempts: number;
           last_dispatch_attempt_at: string | null;
+          repair_attempts: number;
+          validation_error: string | null;
           finished_at: string | null;
         };
         Insert: Partial<Database["public"]["Tables"]["builds"]["Row"]> & {

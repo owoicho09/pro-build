@@ -23,6 +23,12 @@ import { notifyUser } from "@/lib/services/notifications";
 import { captureAndStoreScreenshot } from "@/lib/services/screenshot";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { MAX_CONCURRENT_BUILDS, MAX_DISPATCH_ATTEMPTS } from "@/lib/config/concurrency";
+import { validateRenderedStyling } from "@/lib/services/build-validation";
+
+// Bounds the automatic "fix your own styling/runtime bug" loop (spec: "Use
+// bounded retries only, e.g. max 2 repair attempts") — see the validation
+// gate in advanceBuild() below.
+const MAX_REPAIR_ATTEMPTS = 2;
 
 // A build that has been failing every status check for this long is treated
 // as stuck rather than transient — see the try/catch in advanceBuild().
@@ -216,6 +222,21 @@ export async function startOrContinueBuild(
 // isTerminalFinishReason; the HavenRock acceptance test live-caught this
 // second case: v0 returned finishReason: "tool-calls" with zero files/text
 // and never progressed further).
+// Sent as a normal continuation message on the SAME v0 chat (full context
+// of its own prior code) — deliberately scoped to "find and fix the exact
+// cause" rather than inviting a broader rewrite, per spec: "Do not blindly
+// rewrite the whole project or styling stack." Modeled on a real precedent:
+// a plain "find and fix that malformed class name" follow-up previously
+// resolved this exact class of error on a different project.
+function buildRepairPrompt(diagnosticDetail: string): string {
+  return `Automated validation found a styling/runtime problem with the current version of this site: it rendered without its styling system properly applied.
+
+Diagnostic detail captured from the live preview:
+"${diagnosticDetail}"
+
+Please find and fix the exact, smallest cause of this specific problem (for example: a malformed or concatenated Tailwind utility class, a missing CSS import, a broken PostCSS/Tailwind config, or an invalid import) without rewriting unrelated code, changing the design, or replacing the styling system.`;
+}
+
 async function markBuildStuck(
   buildId: string,
   project: { id: string; ownerId: string; name: string },
@@ -524,6 +545,139 @@ export async function advanceBuild(buildId: string): Promise<void> {
       previewUrl = preview?.url ?? undefined;
     } catch (err) {
       console.error("Failed to fetch preview for project", build.projectId, err);
+    }
+  }
+
+  // Post-build validation gate: v0 reporting a terminal, non-error
+  // finishReason only means generation finished — it says nothing about
+  // whether the actual rendered page works. Confirmed live: a project can
+  // compile and open while its styling system silently fails to apply
+  // (v0's own preview-time Tailwind engine threw a runtime error on
+  // correctly-formed source CSS). A build must never be marked "succeeded"
+  // without actually opening the rendered preview and checking it. Skipped
+  // when there's no previewUrl to check — that's an existing, separate
+  // best-effort degrade path (see the comment above), not something this
+  // gate should block on.
+  if (succeeded && previewUrl) {
+    const validation = await validateRenderedStyling(previewUrl).catch((err) => {
+      // The validator itself failing (e.g. a Chromium launch problem) is
+      // never grounds to fail a build that v0 genuinely reported as
+      // successful — that would make infrastructure flakiness look like a
+      // generation failure. Best-effort: treat as passed.
+      console.error("Style validation threw for build", buildId, err);
+      return { passed: true } as const;
+    });
+
+    if (!validation.passed) {
+      if (build.repairAttempts < MAX_REPAIR_ATTEMPTS) {
+        try {
+          const repairHandle = await engine.continueProject({
+            ref: { externalProjectId: project.v0ProjectId, externalChatId: project.v0ChatId },
+            prompt: buildRepairPrompt(validation.diagnosticDetail ?? validation.reason ?? "unknown styling failure"),
+          });
+
+          if (status.assistantText) {
+            await db.insert(messages).values({
+              projectId: build.projectId,
+              role: "assistant",
+              content: status.assistantText,
+              v0MessageId: status.externalMessageId,
+            });
+          }
+          await db.insert(messages).values({
+            projectId: build.projectId,
+            role: "system",
+            content:
+              "Automated checks found a styling problem with this version — retrying automatically to fix it.",
+          });
+
+          await db
+            .update(builds)
+            .set({
+              state: "streaming",
+              v0MessageId: repairHandle.externalMessageId,
+              repairAttempts: build.repairAttempts + 1,
+              validationError: validation.diagnosticDetail ?? validation.reason ?? null,
+            })
+            .where(eq(builds.id, buildId));
+        } catch (err) {
+          if (err instanceof BuilderCapacityError) {
+            // Transient — leave everything untouched, the next poll tick
+            // re-resolves the same terminal status and retries this same
+            // repair attempt (same "one bad tick isn't fatal" philosophy
+            // as the status-check catch above).
+            console.error("Repair dispatch hit provider capacity for build", buildId, err);
+            return;
+          }
+          console.error("Failed to send repair message for build", buildId, err);
+          await markBuildStuck(
+            buildId,
+            project,
+            toSafeMessage(err, "We found a styling problem but couldn't send the automatic fix. Please try again."),
+          );
+        }
+        return;
+      }
+
+      // Repair attempts exhausted — this must never be marked "succeeded".
+      // Credits are still charged for the real v0 usage this resolution
+      // incurred, same as any other terminal build (see the transaction
+      // below) — only the interim repair-triggering generations go
+      // unbilled, a deliberate, conservative simplification.
+      await db.transaction(async (tx) => {
+        await tx
+          .update(builds)
+          .set({
+            state: "failed",
+            errorCode: "styling_validation_failed",
+            errorMessage:
+              "We generated this site, but automated checks found the styling didn't load correctly, and automatic repair attempts didn't resolve it. Your project and its code are preserved — try describing the specific visual problem, or contact support.",
+            validationError: validation.diagnosticDetail ?? validation.reason ?? null,
+            creditsCost,
+            finishedAt: new Date(),
+          })
+          .where(eq(builds.id, buildId));
+
+        await tx
+          .update(projects)
+          .set({ status: "failed", lastActivityAt: new Date() })
+          .where(eq(projects.id, build.projectId));
+
+        if (creditsCost !== null) {
+          await tx.insert(usageEvents).values({
+            projectId: build.projectId,
+            userId: project.ownerId,
+            buildId: build.id,
+            creditsCost,
+            eventType: "build_generation",
+          });
+
+          const [{ balance } = { balance: 0 }] = await tx
+            .select({ balance: creditLedger.balanceAfter })
+            .from(creditLedger)
+            .where(eq(creditLedger.userId, project.ownerId))
+            .orderBy(desc(creditLedger.createdAt))
+            .limit(1);
+
+          await tx.insert(creditLedger).values({
+            userId: project.ownerId,
+            projectId: build.projectId,
+            delta: -creditsCost,
+            balanceAfter: balance - creditsCost,
+            reason: "build_debit",
+            referenceId: build.id,
+          });
+        }
+      });
+
+      await notifyUser({
+        userId: project.ownerId,
+        projectId: build.projectId,
+        projectName: project.name,
+        type: "build_failed",
+      }).catch((err) => console.error("Failed to notify user of validation failure", build.id, err));
+
+      return;
     }
   }
 

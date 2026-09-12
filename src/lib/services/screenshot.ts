@@ -16,7 +16,7 @@ const VIEWPORT = { width: 1280, height: 800 };
 // v0's preview is cross-origin, so there is no client-side way to capture
 // it (canvas/html2canvas can't read cross-origin pixels) — this has to run
 // server-side against a real browser.
-async function launchBrowser() {
+export async function launchBrowser() {
   // Vercel's production runtime is Linux; @sparticuz/chromium ships a
   // Chromium build compiled for that environment and is the standard,
   // well-supported way to run headless Chrome inside a Vercel serverless

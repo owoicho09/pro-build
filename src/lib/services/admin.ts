@@ -85,6 +85,8 @@ export type AdminBuildRow = {
   preview_status: string;
   deployment_status: string;
   credits_cost: number | null;
+  repair_attempts: number;
+  validation_error: string | null;
 };
 
 export type AdminProjectDiagnostics = {
@@ -198,7 +200,9 @@ export async function getAdminBuildTable(): Promise<AdminBuildRow[]> {
       pr.v0_chat_id,
       case when pr.preview_url is not null then 'ready' else 'none' end as preview_status,
       case when pr.status = 'live' then 'live' when pr.production_url is not null then 'published' else 'not published' end as deployment_status,
-      b.credits_cost
+      b.credits_cost,
+      b.repair_attempts,
+      b.validation_error
     from builds b
     join projects pr on pr.id = b.project_id
     join auth.users u on u.id = b.user_id

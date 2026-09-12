@@ -314,6 +314,17 @@ export const builds = pgTable(
     // build-orchestrator.ts).
     dispatchAttempts: integer("dispatch_attempts").notNull().default(0),
     lastDispatchAttemptAt: timestamp("last_dispatch_attempt_at", { withTimezone: true }),
+    // How many automatic "fix your own styling/runtime bug" follow-up
+    // messages have been sent for this build after it rendered but failed
+    // post-build validation (see validateRenderedStyling() /
+    // MAX_REPAIR_ATTEMPTS in build-orchestrator.ts) — a different concept
+    // from dispatchAttempts (provider-capacity retries).
+    repairAttempts: integer("repair_attempts").notNull().default(0),
+    // Raw diagnostic from the last failed validation (console error text,
+    // failed request URL, etc.) — admin-only (surfaced in the admin build
+    // table), deliberately never written to error_message, which renders
+    // unguarded in the workspace UI.
+    validationError: text("validation_error"),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
   (table) => [

@@ -220,6 +220,7 @@ export default async function AdminPage({
                 <th className="pb-2 pr-4">Duration</th>
                 <th className="pb-2 pr-4">Preview</th>
                 <th className="pb-2 pr-4">Deployment</th>
+                <th className="pb-2 pr-4">Repairs</th>
                 <th className="pb-2 pr-4">Error</th>
                 <th className="pb-2">Credits</th>
               </tr>
@@ -243,6 +244,9 @@ export default async function AdminPage({
                   </td>
                   <td className="py-2 pr-4">{b.preview_status}</td>
                   <td className="py-2 pr-4">{b.deployment_status}</td>
+                  <td className="py-2 pr-4" title={b.validation_error ?? undefined}>
+                    {b.repair_attempts > 0 ? `${b.repair_attempts}` : "—"}
+                  </td>
                   <td className="py-2 pr-4">{b.error_message ?? "—"}</td>
                   <td className="py-2">{b.credits_cost ?? "—"}</td>
                 </tr>

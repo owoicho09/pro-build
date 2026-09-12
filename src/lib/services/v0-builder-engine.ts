@@ -13,6 +13,7 @@ import type {
 import { isTerminalFinishReason, BuilderCapacityError } from "./builder-engine";
 import { withTimeout } from "@/lib/utils/timeout";
 import { ExternalProviderError } from "@/lib/utils/external-provider-error";
+import { BUILDER_SYSTEM_PROMPT } from "@/lib/config/builder-system-prompt";
 
 // See BuilderCapacityError's doc comment — this is the exact shape the
 // installed v0-sdk throws for ANY non-2xx response (node_modules/v0-sdk/
@@ -113,6 +114,7 @@ export class V0BuilderEngine implements BuilderEngine {
             message: input.prompt,
             attachments: input.attachments,
             projectId: project.id,
+            system: BUILDER_SYSTEM_PROMPT,
             responseMode: "async",
           }),
           KICKOFF_TIMEOUT_MS,
@@ -146,6 +148,7 @@ export class V0BuilderEngine implements BuilderEngine {
             chatId: input.ref.externalChatId,
             message: input.prompt,
             attachments: input.attachments,
+            system: BUILDER_SYSTEM_PROMPT,
             responseMode: "async",
           }),
           KICKOFF_TIMEOUT_MS,

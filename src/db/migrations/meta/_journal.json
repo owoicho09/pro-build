@@ -71,6 +71,13 @@
       "when": 1789226944109,
       "tag": "0009_sticky_grim_reaper",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789249521148,
+      "tag": "0010_robust_human_cannonball",
+      "breakpoints": true
     }
   ]
 }
