@@ -27,6 +27,11 @@ export const config = {
   // proxy.ts to actually execute without also excluding `api` here would
   // have broken both.
   matcher: [
-    "/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    // manifest.webmanifest added after live-testing showed the browser's
+    // automatic manifest fetch (triggered by the <link rel="manifest"> tag
+    // Next.js injects for src/app/manifest.ts) going through this proxy
+    // unauthenticated and getting redirected to /login — harmless to the
+    // manifest itself, but pure noise this route has no reason to see.
+    "/((?!api|_next/static|_next/image|favicon.ico|manifest.webmanifest|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };

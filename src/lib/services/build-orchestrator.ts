@@ -19,6 +19,7 @@ import { usdToCredits } from "@/lib/config/credits";
 import { resolveAttachmentsForBuilder } from "@/lib/services/attachments";
 import { checkBuildAllowance } from "@/lib/services/usage";
 import { notifyUser } from "@/lib/services/notifications";
+import { captureAndStoreScreenshot } from "@/lib/services/screenshot";
 
 // A build that has been failing every status check for this long is treated
 // as stuck rather than transient — see the try/catch in advanceBuild().
@@ -317,12 +318,20 @@ export async function advanceBuild(buildId: string): Promise<void> {
     : false;
 
   // Fetched outside the transaction since it's an external API call, not a
-  // DB operation — best-effort only, a preview/thumbnail is never worth
-  // failing the build finalization over. previewUrl is the fix for the
-  // "No preview yet after reopening" bug: it's now durably written here
-  // instead of only ever being fetched live (and unreliably) on each page
-  // load — see projects.previewUrl's comment in schema.ts.
-  let thumbnailUrl: string | null | undefined;
+  // DB operation — best-effort only, a preview is never worth failing the
+  // build finalization over. previewUrl is the fix for the "No preview yet
+  // after reopening" bug: it's now durably written here instead of only
+  // ever being fetched live (and unreliably) on each page load — see
+  // projects.previewUrl's comment in schema.ts.
+  //
+  // The project THUMBNAIL is deliberately NOT sourced from this call (or
+  // from v0 at all) — see the screenshot-capture block below, after the
+  // transaction. v0's own `screenshotUrl` here is the same family of
+  // signed, short-lived link as `previewUrl`, and was the actual root
+  // cause of project cards going blank after a refresh/reopen: it isn't
+  // durable, so persisting it directly just relocated the "preview" bug
+  // onto project cards. Thumbnails and the interactive preview are
+  // different resources with different lifecycles now.
   let previewUrl: string | null | undefined;
   if (succeeded) {
     try {
@@ -331,26 +340,8 @@ export async function advanceBuild(buildId: string): Promise<void> {
         externalChatId: project.v0ChatId,
       });
       previewUrl = preview?.url ?? undefined;
-      thumbnailUrl = preview?.screenshotUrl ?? undefined;
-
-      // v0-sdk's own types declare screenshotUrl optional on every version
-      // shape — confirmed it can genuinely be absent the instant a build
-      // completes (the screenshot isn't necessarily rendered yet). One
-      // short, bounded retry catches the common "not ready yet" case
-      // without turning this into an open-ended polling loop; if it's
-      // still missing after that, the next successful build is what fixes
-      // the thumbnail, same as before.
-      if (!thumbnailUrl) {
-        await new Promise((resolve) => setTimeout(resolve, 2500));
-        const retried = await engine.getPreview({
-          externalProjectId: project.v0ProjectId,
-          externalChatId: project.v0ChatId,
-        });
-        thumbnailUrl = retried?.screenshotUrl ?? undefined;
-        previewUrl = previewUrl ?? retried?.url ?? undefined;
-      }
     } catch (err) {
-      console.error("Failed to fetch preview/screenshot for project", build.projectId, err);
+      console.error("Failed to fetch preview for project", build.projectId, err);
     }
   }
 
@@ -385,7 +376,6 @@ export async function advanceBuild(buildId: string): Promise<void> {
             : "preview_ready"
           : "failed",
         lastActivityAt: new Date(),
-        ...(thumbnailUrl ? { thumbnailUrl } : {}),
         ...(previewUrl ? { previewUrl } : {}),
       })
       .where(eq(projects.id, build.projectId));
@@ -417,6 +407,32 @@ export async function advanceBuild(buildId: string): Promise<void> {
     }
   });
 
+  // Thumbnail capture is deliberately deferred and decoupled from the
+  // transaction above — it's a real browser navigation + screenshot, not a
+  // DB write, and can take anywhere from a couple of seconds to tens of
+  // seconds depending on how long the generated site takes to actually
+  // render (see screenshot.ts). The build has already fully "succeeded" the
+  // moment the transaction commits; a slow or failed screenshot must never
+  // hold that up, and per screenshot.ts's contract (it throws, never
+  // returns a partial/placeholder result) a failure here leaves
+  // `thumbnail_url` completely untouched — the previous successful
+  // thumbnail stays exactly as it was.
+  if (succeeded && previewUrl) {
+    const capturedProjectId = build.projectId;
+    const capturedPreviewUrl = previewUrl;
+    after(async () => {
+      try {
+        const thumbnailUrl = await captureAndStoreScreenshot({
+          previewUrl: capturedPreviewUrl,
+          projectId: capturedProjectId,
+        });
+        await db.update(projects).set({ thumbnailUrl }).where(eq(projects.id, capturedProjectId));
+      } catch (err) {
+        console.error("Screenshot capture failed for project", capturedProjectId, err);
+      }
+    });
+  }
+
   await notifyUser({
     userId: project.ownerId,
     projectId: build.projectId,
@@ -429,13 +445,14 @@ export async function advanceBuild(buildId: string): Promise<void> {
   }).catch((err) => console.error("Failed to notify user of build outcome", build.id, err));
 }
 
-// v0's preview URL carries a signed, time-limited token. A project left
-// idle long enough can end up with a persisted previewUrl whose token has
-// expired — the demo host then serves its own "loading" shell forever
-// instead of the real app, which looks identical to "no preview" but never
-// self-corrects on its own. This does a live re-check against v0 and
-// persists the result, used both by the manual "Refresh" button and by
-// page.tsx's time-gated auto self-heal (see PREVIEW_STALE_MS there).
+// v0's preview URL carries a signed token that doesn't survive being
+// reused indefinitely (live-tested: even a "fresh" one only reliably works
+// once). This does a live re-check against v0 and persists the result —
+// used by both the manual "Refresh" button and the workspace's
+// auto-refresh-on-mount (see preview-pane.tsx). Deliberately does NOT
+// touch thumbnail_url: the interactive preview and the project-card
+// thumbnail are different resources with different lifecycles now — see
+// screenshot.ts for how the thumbnail is actually captured and stored.
 export async function refreshProjectPreview(
   supabase: SupabaseClient<Database>,
   input: { projectId: string },
@@ -463,7 +480,6 @@ export async function refreshProjectPreview(
     .update({
       preview_url: preview?.url ?? null,
       preview_url_checked_at: new Date().toISOString(),
-      ...(preview?.screenshotUrl ? { thumbnail_url: preview.screenshotUrl } : {}),
     })
     .eq("id", input.projectId);
 

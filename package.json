@@ -12,6 +12,7 @@
     "db:migrate": "tsx --env-file=.env.local src/db/migrate.ts"
   },
   "dependencies": {
+    "@sparticuz/chromium": "^153.0.0",
     "@supabase/ssr": "^0.12.6",
     "@supabase/supabase-js": "^2.115.0",
     "class-variance-authority": "^0.7.1",
@@ -21,6 +22,7 @@
     "next": "16.3.4",
     "next-themes": "^0.4.6",
     "pg": "^8.23.0",
+    "puppeteer-core": "^25.10.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "server-only": "^0.0.1",
@@ -38,9 +40,15 @@
     "drizzle-kit": "^0.28.1",
     "eslint": "^9",
     "eslint-config-next": "16.3.4",
+    "puppeteer": "^25.10.0",
     "tailwindcss": "^4",
     "tsx": "^4.23.13",
     "typescript": "^5"
   },
-  "packageManager": "pnpm@10.29.3"
+  "packageManager": "pnpm@10.29.3",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "puppeteer"
+    ]
+  }
 }

@@ -5,48 +5,150 @@ import { ExternalProviderError } from "@/lib/utils/external-provider-error";
 const VERCEL_API_BASE = "https://api.vercel.com";
 const REQUEST_TIMEOUT_MS = 20_000;
 
-// Live-testing discovery (see README "Live integration test — Slice 6"):
-// a Vercel project created via v0's deploy() has Vercel Authentication
-// (SSO deployment protection) ON by default, so the "production" URL
-// isn't actually publicly reachable — visiting it redirects to
-// vercel.com/sso-api. v0's own API has no setting for this; it's a Vercel
-// project-level setting, only reachable via Vercel's own REST API with a
-// token that has access to whatever Vercel team/account owns the project.
-export async function disableDeploymentProtection(
-  vercelProjectId: string,
-): Promise<{ disabled: boolean; reason?: string }> {
+// Root-cause investigation (see deploy-orchestrator.ts's publish flow for
+// the full writeup): Vercel projects v0 creates come back with Deployment
+// Protection's "Standard Protection" mode already on
+// (ssoProtection.deploymentType: "prod_deployment_urls_and_all_previews") —
+// confirmed against Vercel's own REST API docs, which name that exact enum
+// value "Standard Protection" in their dashboard. Per Vercel's own
+// deployment-protection docs, that mode protects each deployment's own
+// unique per-deployment URL (both production's and every preview's) but
+// deliberately leaves the project's assigned production alias/custom
+// domain public — the alias is what real visitors are meant to use.
+// getDeploymentPublicAlias() below resolves that alias directly from the
+// deployment record rather than trusting v0's returned webUrl (which is
+// that unique, protectable per-deployment URL — see v0-sdk's
+// `DeploymentDetail.webUrl`, and Vercel's own deployment schema, where the
+// equivalent field is documented as "the unique URL of the deployment").
+//
+// ensureProductionProtectionIsPublic() is a narrower, non-destructive
+// second line of defense: it only touches the project's protection setting
+// if that setting currently covers production ("all" or
+// "prod_deployment_urls_and_all_previews"), narrowing it to
+// "preview"-only — which per Vercel's docs explicitly excludes both
+// production's deployment URL and its alias. It never removes protection
+// that wasn't covering production in the first place, and never sets
+// protection where none existed — deliberately not the old
+// `ssoProtection: null` approach, since that would also strip protection
+// from real preview deployments, which the product spec says may stay
+// protected.
+//
+// GET /v13/deployments/{id} and the ssoProtection shape below are both
+// confirmed against Vercel's current REST API reference docs, not guessed.
+export async function getDeploymentPublicAlias(
+  vercelDeploymentId: string,
+): Promise<string | null> {
   const token = process.env.VERCEL_ACCESS_TOKEN;
-  if (!token) {
-    return { disabled: false, reason: "VERCEL_ACCESS_TOKEN is not configured." };
-  }
-
-  const url = new URL(`${VERCEL_API_BASE}/v9/projects/${vercelProjectId}`);
-  if (process.env.VERCEL_TEAM_ID) {
-    url.searchParams.set("teamId", process.env.VERCEL_TEAM_ID);
-  }
+  if (!token) return null;
 
   const response = await withTimeout(
-    fetch(url, {
+    fetch(apiUrl(`/v13/deployments/${vercelDeploymentId}`), {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+    REQUEST_TIMEOUT_MS,
+    "Timed out resolving the deployment's production alias.",
+  );
+
+  if (!response.ok) {
+    console.error(
+      "Failed to read deployment for alias resolution",
+      vercelDeploymentId,
+      response.status,
+      await response.text().catch(() => ""),
+    );
+    return null;
+  }
+
+  const data = (await response.json()) as {
+    alias?: string[];
+    aliasFinal?: string | null;
+  };
+  const hostname = data.aliasFinal ?? data.alias?.[0] ?? null;
+  return hostname ? `https://${hostname}` : null;
+}
+
+export async function ensureProductionProtectionIsPublic(
+  vercelProjectId: string,
+): Promise<{ adjusted: boolean; reason?: string }> {
+  const token = process.env.VERCEL_ACCESS_TOKEN;
+  if (!token) {
+    return { adjusted: false, reason: "VERCEL_ACCESS_TOKEN is not configured." };
+  }
+
+  const getResponse = await withTimeout(
+    fetch(apiUrl(`/v9/projects/${vercelProjectId}`), {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+    REQUEST_TIMEOUT_MS,
+    "Timed out reading deployment protection settings.",
+  );
+  if (!getResponse.ok) {
+    return {
+      adjusted: false,
+      reason: `Vercel API returned ${getResponse.status} reading project settings.`,
+    };
+  }
+
+  const project = (await getResponse.json()) as {
+    ssoProtection?: { deploymentType: string } | null;
+  };
+  const coversProduction =
+    project.ssoProtection?.deploymentType === "all" ||
+    project.ssoProtection?.deploymentType === "prod_deployment_urls_and_all_previews";
+  if (!coversProduction) {
+    // Already "preview"-only, or unset entirely — production is already
+    // public, nothing to narrow, and nothing to add.
+    return { adjusted: false };
+  }
+
+  const patchResponse = await withTimeout(
+    fetch(apiUrl(`/v9/projects/${vercelProjectId}`), {
       method: "PATCH",
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ ssoProtection: null }),
+      body: JSON.stringify({ ssoProtection: { deploymentType: "preview" } }),
     }),
     REQUEST_TIMEOUT_MS,
-    "Timed out disabling deployment protection.",
+    "Timed out updating deployment protection settings.",
   );
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
+  if (!patchResponse.ok) {
+    const body = await patchResponse.text().catch(() => "");
     return {
-      disabled: false,
-      reason: `Vercel API returned ${response.status}: ${body.slice(0, 300)}`,
+      adjusted: false,
+      reason: `Vercel API returned ${patchResponse.status}: ${body.slice(0, 300)}`,
     };
   }
 
-  return { disabled: true };
+  return { adjusted: true };
+}
+
+// Never speculate about whether a link is protected — confirm it. A
+// protected deployment sends visitors through a Vercel login redirect (see
+// Vercel's Vercel Authentication docs); `fetch`'s default redirect-following
+// means a protected URL resolves to a final `response.url` on vercel.com
+// instead of the original site, which is the one reliable, documented
+// signal available without a real browser session. A network error or
+// timeout here is "couldn't verify," not evidence of protection — it must
+// never produce a false warning on a working link.
+export async function verifyPublicUrl(
+  url: string,
+): Promise<{ verified: boolean; requiresVercelAuth: boolean }> {
+  try {
+    const response = await withTimeout(
+      fetch(url, { method: "GET", redirect: "follow" }),
+      10_000,
+      "Timed out verifying the published URL.",
+    );
+    const redirectedToVercelAuth =
+      response.url.includes("vercel.com/sso-api") || response.url.includes("vercel.com/login");
+    const requiresVercelAuth = response.status === 401 || redirectedToVercelAuth;
+    return { verified: response.ok && !requiresVercelAuth, requiresVercelAuth };
+  } catch (err) {
+    console.error("Failed to verify published URL is public", url, err);
+    return { verified: false, requiresVercelAuth: false };
+  }
 }
 
 function requireToken(): string {

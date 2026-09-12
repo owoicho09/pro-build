@@ -1,12 +1,21 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { ExternalLink, RefreshCw } from "lucide-react";
 import { PreviewSkeleton } from "@/components/workspace/preview-skeleton";
 import { PreviewSizeToggle, type PreviewSize } from "@/components/workspace/preview-size-toggle";
 import { cn } from "@/lib/utils";
 import { refreshPreviewAction } from "@/app/projects/[id]/actions";
+
+// v0's demo host is a real (often cold-starting) app on the other end of
+// that URL — live-tested this can take up to several seconds past the HTTP
+// response before it actually paints, and it's cross-origin, so there's no
+// reliable "content painted" signal to wait for instead (onLoad fires once
+// the shell document loads, well before streamed content is visible). This
+// is a heuristic window, not a guarantee — it just replaces a silent blank
+// void with an honest "this is loading" during the common case.
+const PREVIEW_BOOT_MS = 6000;
 
 // Simulated viewport widths — the generated project itself is responsive;
 // this just lets the user check how it looks at each size without leaving
@@ -43,18 +52,18 @@ export function PreviewPane({
   const [previewUrl, setPreviewUrl] = useState(initialPreviewUrl);
 
   // Render-time sync (same idiom used elsewhere in this app) — a fresh
-  // server-rendered previewUrl (from page.tsx's own stale-token self-heal,
-  // or a newer build finishing) takes over without a setState-in-effect.
+  // server-rendered previewUrl (from a newer build finishing, picked up via
+  // router.refresh()) takes over without a setState-in-effect.
   const [syncedInitialPreviewUrl, setSyncedInitialPreviewUrl] = useState(initialPreviewUrl);
   if (initialPreviewUrl !== syncedInitialPreviewUrl) {
     setSyncedInitialPreviewUrl(initialPreviewUrl);
     setPreviewUrl(initialPreviewUrl);
   }
 
-  // v0's preview URL carries a signed, time-limited token — remounting the
-  // SAME url (the old behavior) does nothing for a stale token. Refresh now
-  // does a live re-check against v0 first and, if it gets a fresh URL, uses
-  // that instead; if the check fails, it still falls back to the old
+  // v0's preview URL carries a signed token — remounting the SAME url (the
+  // old behavior) does nothing once it's been used. Refresh does a live
+  // re-check against v0 first and, if it gets a fresh URL, uses that
+  // instead; if the check fails, it still falls back to the old
   // remount-only behavior rather than doing nothing.
   function handleRefresh() {
     startRefresh(async () => {
@@ -66,6 +75,46 @@ export function PreviewPane({
       router.refresh();
     });
   }
+
+  // Auto-refresh once per workspace visit, right after mount — the
+  // persisted previewUrl from the server (page.tsx) renders immediately so
+  // opening the workspace is never blocked on a live v0 call, but that
+  // persisted URL's token may already be spent (see handleRefresh's
+  // comment). This resolves a genuinely fresh one in the background and
+  // swaps the iframe over once it arrives — it only ever sets a new,
+  // truthy previewUrl, so a working preview is never cleared just because
+  // this hasn't resolved yet.
+  useEffect(() => {
+    let cancelled = false;
+    refreshPreviewAction(projectId).then((result) => {
+      if (!cancelled && result.success && result.previewUrl) {
+        setPreviewUrl(result.previewUrl);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  // Every time the iframe actually gets a new src, give it a window to boot
+  // before treating a blank canvas as just "how it looks" — see
+  // PREVIEW_BOOT_MS above. Entering the boot state is derived during render
+  // (same render-time-sync idiom used elsewhere in this app) rather than
+  // set from inside the effect; the effect's only job is scheduling the
+  // later, deferred clear.
+  const mountKey = `${previewUrl}-${refreshNonce}`;
+  const [isBooting, setIsBooting] = useState(true);
+  const [syncedMountKey, setSyncedMountKey] = useState(mountKey);
+  if (mountKey !== syncedMountKey) {
+    setSyncedMountKey(mountKey);
+    setIsBooting(true);
+  }
+
+  useEffect(() => {
+    if (!isBooting) return;
+    const timer = setTimeout(() => setIsBooting(false), PREVIEW_BOOT_MS);
+    return () => clearTimeout(timer);
+  }, [isBooting, mountKey]);
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col">
@@ -128,6 +177,17 @@ export function PreviewPane({
             <div className="flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground shadow-md">
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand" />
               Updating preview...
+            </div>
+          </div>
+        )}
+        {/* The demo itself can take a few real seconds to render past its
+            own loading shell — without this, that window just looks like a
+            blank, broken preview instead of one that's still coming up. */}
+        {previewUrl && !inProgress && isBooting && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-background/70">
+            <div className="flex items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground shadow-md">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand" />
+              Loading preview...
             </div>
           </div>
         )}
