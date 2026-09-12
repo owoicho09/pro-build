@@ -8,13 +8,19 @@ name: Advance pending builds
 # we're on a Vercel plan tier with sub-daily Cron Jobs, at which point this
 # can be replaced by a `crons` entry in vercel.json instead.
 #
+# Every 5 minutes, not every minute: GitHub's own docs state "the shortest
+# interval you can run scheduled workflows is once every 5 minutes" — a
+# `* * * * *` schedule here silently never fires (confirmed live: it sat
+# at zero runs well past the first several minutes after this workflow was
+# added). GitHub also warns `schedule` can be delayed further under load.
+#
 # Requires two repo secrets (Settings -> Secrets and variables -> Actions):
 #   APP_BASE_URL - the deployed app's origin, e.g. https://probuild.example.com
 #   CRON_SECRET  - must match the CRON_SECRET env var configured on the
 #                  deployment; the route rejects any other value with 401.
 on:
   schedule:
-    - cron: "* * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
 jobs:
