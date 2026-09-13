@@ -9,6 +9,7 @@ import type {
   BuilderPreview,
   BuilderDeployResult,
   BuilderEnvVar,
+  BuilderUsage,
 } from "./builder-engine";
 import { isTerminalFinishReason, BuilderCapacityError } from "./builder-engine";
 import { withTimeout } from "@/lib/utils/timeout";
@@ -54,6 +55,11 @@ function client() {
 // We never pass that mode, so a stream here would mean the SDK's behavior
 // doesn't match what Check 2 assumed — fail loudly rather than silently
 // mishandle it.
+function sumUsage(events: Array<{ totalCost?: unknown }>): BuilderUsage {
+  const totalCostUsd = events.reduce((sum, event) => sum + Number(event.totalCost ?? 0), 0);
+  return { totalCostUsd };
+}
+
 function assertNotStream<T>(value: T | ReadableStream<Uint8Array>): T {
   if (value instanceof ReadableStream) {
     throw new Error(
@@ -210,11 +216,7 @@ export class V0BuilderEngine implements BuilderEngine {
         ),
       );
 
-      const totalCostUsd = usageResp.data.reduce(
-        (sum, event) => sum + Number(event.totalCost ?? 0),
-        0,
-      );
-      usage = { totalCostUsd };
+      usage = sumUsage(usageResp.data);
       assistantText = chat.text ?? null;
     }
 
@@ -226,6 +228,28 @@ export class V0BuilderEngine implements BuilderEngine {
       finishReason,
       usage,
     };
+  }
+
+  // Best-effort, standalone — no finishReason requirement (see the
+  // interface doc comment). Swallows every failure and returns null rather
+  // than throwing, since this only ever runs as a last-chance recovery
+  // attempt right before a build is given up on as stuck.
+  async getUsageForMessage(input: BuilderMessageHandle): Promise<BuilderUsage | null> {
+    try {
+      const v0 = client();
+      const usageResp = await withTimeout(
+        v0.reports.getUsage({
+          chatId: input.externalChatId,
+          messageId: input.externalMessageId,
+        }),
+        READ_TIMEOUT_MS,
+        "Timed out fetching usage for a stuck build's message.",
+      );
+      return sumUsage(usageResp.data);
+    } catch (err) {
+      console.error("Failed to recover usage for message", input.externalMessageId, err);
+      return null;
+    }
   }
 
   async getFiles(input: BuilderResourceRef): Promise<BuilderFile[]> {

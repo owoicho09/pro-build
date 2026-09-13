@@ -166,6 +166,7 @@ export interface Database {
           credits_cost: number | null;
           started_at: string;
           dispatched_at: string | null;
+          generation_kind: string | null;
           dispatch_attempts: number;
           last_dispatch_attempt_at: string | null;
           repair_attempts: number;

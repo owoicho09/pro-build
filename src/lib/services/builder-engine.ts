@@ -119,6 +119,17 @@ export interface BuilderEngine {
     input: BuilderMessageHandle,
   ): Promise<BuilderMessageStatus>;
 
+  /**
+   * Best-effort standalone usage lookup for a specific message — unlike
+   * getMessageStatus, doesn't require a terminal finishReason first. Used
+   * to recover cost data for a message that's about to be given up on
+   * (see build-orchestrator.ts's markBuildStuck): a build can go stuck
+   * without ever seeing a terminal status, but v0 may still have real,
+   * billable usage recorded for the work it already did. Returns null on
+   * any failure — never a hard requirement of finalizing a stuck build.
+   */
+  getUsageForMessage(input: BuilderMessageHandle): Promise<BuilderUsage | null>;
+
   /** Current generated file snapshot for a project. */
   getFiles(input: BuilderResourceRef): Promise<BuilderFile[]>;
 

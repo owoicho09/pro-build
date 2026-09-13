@@ -80,9 +80,24 @@ export const usageEventTypeEnum = pgEnum("usage_event_type", [
   // Real Anthropic API calls in the planner/repair pipeline (see
   // planner.ts, build-orchestrator.ts's generateRepairPrompt) — billed
   // through the same Build Credits ledger as v0's own usage, distinguished
-  // by `provider: "anthropic"` + one of these two event types.
+  // by `provider: "anthropic"` + one of these event types.
   "planner_generation",
+  // v0's own repair-code generation (a real generation, same provider as
+  // initial/continuation — NOT the Anthropic call that writes the repair
+  // instruction, see repair_prompt_generation below). Zero historical rows
+  // used this value before this pass, so reassigning it here is not a
+  // breaking rename of real data.
   "repair_generation",
+  // Anthropic (Sonnet 5) writing the repair instruction itself — distinct
+  // from v0's repair_generation above, which is v0 actually regenerating
+  // code from that instruction.
+  "repair_prompt_generation",
+  // v0's very first generation for a project vs. every subsequent
+  // follow-up edit on an existing chat — previously both were recorded as
+  // the generic "build_generation"; split out so cost can be attributed
+  // by generation type (see builds.generationKind).
+  "initial_generation",
+  "continuation_generation",
 ]);
 
 export const ledgerReasonEnum = pgEnum("ledger_reason", [
@@ -349,6 +364,14 @@ export const builds = pgTable(
     // dispatching" apart from "queued/streaming, already sent" without a
     // new enum state.
     dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
+    // Set once, at first dispatch — "initial" if the project had no v0
+    // chat/project yet, "continuation" otherwise. Persisted because cost-
+    // event classification (see build-orchestrator.ts's recordProviderUsage
+    // call site) happens later in advanceBuild(), potentially across
+    // several repair-loop ticks, by which point dispatchBuild's own
+    // isNewProject check is long out of scope — a build's classification
+    // never changes across its own repair attempts.
+    generationKind: text("generation_kind"),
     // How many times dispatch has been attempted and hit provider capacity
     // (HTTP 429) — bounds the retry-with-backoff loop so a persistently
     // rate-limited build eventually fails instead of queuing forever, and
@@ -520,11 +543,30 @@ export const usageEvents = pgTable(
     tokensOutput: integer("tokens_output"),
     creditsCost: integer("credits_cost").notNull(),
     eventType: usageEventTypeEnum("event_type").notNull(),
+    // Stable per-generation identifier ("v0:<externalMessageId>",
+    // "anthropic:<eventType>:<buildId>:<attempt>") — the actual idempotency
+    // guarantee (see build-orchestrator.ts's recordProviderUsage) that a
+    // build advanced/polled/retried multiple times can never be billed
+    // twice for the same underlying provider generation. Null on rows
+    // written before this column existed; every new write populates it.
+    providerReference: text("provider_reference"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
-  (table) => [index("usage_events_user_id_idx").on(table.userId)],
+  (table) => [
+    index("usage_events_user_id_idx").on(table.userId),
+    // Deliberately NOT a partial index: Postgres already treats every NULL
+    // as distinct under a plain unique index, so pre-existing/legacy rows
+    // with no provider_reference never conflict with each other — a
+    // partial `where not null` index would additionally require
+    // `.onConflictDoNothing()` to repeat that exact predicate to match it,
+    // which Drizzle doesn't do by default (confirmed live: "no unique or
+    // exclusion constraint matching the ON CONFLICT specification"). A
+    // plain unique index gets the same real guarantee with a simple,
+    // predicate-free `ON CONFLICT (provider_reference)`.
+    uniqueIndex("usage_events_provider_reference_idx").on(table.providerReference),
+  ],
 );
 
 export const creditLedger = pgTable(

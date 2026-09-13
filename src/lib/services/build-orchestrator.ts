@@ -1,6 +1,6 @@
 import "server-only";
 import { after } from "next/server";
-import { desc, eq, inArray } from "drizzle-orm";
+import { desc, eq, inArray, sql } from "drizzle-orm";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { db } from "@/db";
 import {
@@ -294,25 +294,58 @@ async function generateRepairPrompt(input: {
 // cost (spec: "do not break the existing Build Credits abstraction").
 // Best-effort: a failure here is logged, never thrown — a credits-ledger
 // hiccup must never fail the build itself.
-async function recordAnthropicUsage(input: {
+type ProviderUsageEventType =
+  | "initial_generation"
+  | "continuation_generation"
+  | "repair_generation"
+  | "planner_generation"
+  | "repair_prompt_generation";
+
+// The ONE place any provider cost (v0 or Anthropic) ever gets billed —
+// replaces three previously-duplicated "insert usage_events then debit
+// ledger" blocks. `providerReference` is a stable per-generation id
+// ("v0:<externalMessageId>", "anthropic:<eventType>:<buildId>:<attempt>")
+// enforced unique at the database level (see the partial unique index on
+// usage_events.provider_reference) — this is the actual idempotency
+// guarantee, not just a best-effort check, so a build that gets
+// advanced/polled/retried many times (cron sweep + client poll can both
+// call advanceBuild for the same build) can never be billed twice for the
+// same underlying generation: `.onConflictDoNothing()` makes the insert a
+// no-op on a repeat, and the ledger debit only runs when a row was
+// actually, newly inserted.
+async function recordProviderUsage(input: {
   projectId: string;
   userId: string;
   buildId: string;
-  eventType: "planner_generation" | "repair_generation";
+  provider: "v0" | "anthropic";
+  eventType: ProviderUsageEventType;
+  providerReference: string;
   costUsd: number;
 }): Promise<void> {
   const creditsCost = usdToCredits(input.costUsd);
   if (creditsCost <= 0) return;
   try {
     await db.transaction(async (tx) => {
-      await tx.insert(usageEvents).values({
-        projectId: input.projectId,
-        userId: input.userId,
-        buildId: input.buildId,
-        provider: "anthropic",
-        creditsCost,
-        eventType: input.eventType,
-      });
+      const inserted = await tx
+        .insert(usageEvents)
+        .values({
+          projectId: input.projectId,
+          userId: input.userId,
+          buildId: input.buildId,
+          provider: input.provider,
+          creditsCost,
+          eventType: input.eventType,
+          providerReference: input.providerReference,
+        })
+        .onConflictDoNothing({ target: usageEvents.providerReference })
+        .returning({ id: usageEvents.id });
+
+      if (inserted.length === 0) {
+        // Already recorded (a concurrent poll/retry got here first, or
+        // this exact message was already billed on an earlier tick) —
+        // never debit twice for the same generation.
+        return;
+      }
 
       const [{ balance } = { balance: 0 }] = await tx
         .select({ balance: creditLedger.balanceAfter })
@@ -329,21 +362,75 @@ async function recordAnthropicUsage(input: {
         reason: "build_debit",
         referenceId: input.buildId,
       });
+
+      // Additive, not overwritten — a single build can now accumulate
+      // cost across several v0 messages (repair loop) plus Anthropic
+      // calls, so builds.credits_cost is a running total, not "the last
+      // message's cost".
+      await tx
+        .update(builds)
+        .set({ creditsCost: sql`coalesce(${builds.creditsCost}, 0) + ${creditsCost}` })
+        .where(eq(builds.id, input.buildId));
     });
   } catch (err) {
-    console.error("Failed to record Anthropic usage", input.buildId, input.eventType, err);
+    console.error("Failed to record provider usage", input.buildId, input.provider, input.eventType, err);
   }
 }
 
 async function markBuildStuck(
-  buildId: string,
-  project: { id: string; ownerId: string; name: string },
+  build: { id: string; v0MessageId: string | null; repairAttempts: number; generationKind: string | null },
+  project: { id: string; ownerId: string; name: string; v0ProjectId: string | null; v0ChatId: string | null },
   errorMessage: string,
 ): Promise<void> {
+  // Best-effort recovery: a build can go stuck (repeated poll failures, or
+  // v0 never returning a terminal finishReason) after v0 has already done
+  // real, billable work on the message(s) it was sent. One last attempt to
+  // recover that cost before writing it off — never fabricated as $0 if
+  // this genuinely can't be retrieved (spec: "record that fact clearly for
+  // internal diagnostics rather than silently treating the cost as $0").
+  if (build.v0MessageId && project.v0ProjectId && project.v0ChatId) {
+    try {
+      const usage = await getBuilderEngine().getUsageForMessage({
+        externalProjectId: project.v0ProjectId,
+        externalChatId: project.v0ChatId,
+        externalMessageId: build.v0MessageId,
+      });
+      if (usage && usage.totalCostUsd) {
+        await recordProviderUsage({
+          projectId: project.id,
+          userId: project.ownerId,
+          buildId: build.id,
+          provider: "v0",
+          eventType:
+            build.repairAttempts > 0
+              ? "repair_generation"
+              : build.generationKind === "initial"
+                ? "initial_generation"
+                : "continuation_generation",
+          providerReference: `v0:${build.v0MessageId}`,
+          costUsd: usage.totalCostUsd,
+        });
+      } else {
+        console.error(
+          "PROVIDER_COST_UNRECOVERABLE: stuck build finalized with no retrievable v0 usage",
+          build.id,
+          build.v0MessageId,
+        );
+      }
+    } catch (err) {
+      console.error(
+        "PROVIDER_COST_UNRECOVERABLE: usage recovery threw for stuck build",
+        build.id,
+        build.v0MessageId,
+        err,
+      );
+    }
+  }
+
   await db
     .update(builds)
     .set({ state: "failed", errorMessage, finishedAt: new Date() })
-    .where(eq(builds.id, buildId));
+    .where(eq(builds.id, build.id));
   await db
     .update(projects)
     .set({ status: "failed", lastActivityAt: new Date() })
@@ -353,7 +440,7 @@ async function markBuildStuck(
     projectId: project.id,
     projectName: project.name,
     type: "build_failed",
-  }).catch((notifyErr) => console.error("Failed to notify user of stuck build", buildId, notifyErr));
+  }).catch((notifyErr) => console.error("Failed to notify user of stuck build", build.id, notifyErr));
 }
 
 // Sends a queued build's prompt to v0 for the first time — the actual
@@ -463,11 +550,18 @@ export async function dispatchBuild(buildId: string): Promise<void> {
       });
       if (planResult) {
         promptForBuilder = buildPromptFromPlan(triggerMessage.content, planResult.plan);
-        await recordAnthropicUsage({
+        await recordProviderUsage({
           projectId: project.id,
           userId: project.owner_id,
           buildId,
+          provider: "anthropic",
           eventType: "planner_generation",
+          // No attempt number: at most one plan is ever billed per build
+          // (a capacity-retry re-running dispatchBuild would generate
+          // another plan, but this reference makes billing it a no-op —
+          // wasteful of a redundant Anthropic call on that rare retry
+          // path, never a double-charge).
+          providerReference: `anthropic:planner_generation:${buildId}`,
           costUsd: planResult.costUsd,
         });
       }
@@ -507,6 +601,7 @@ export async function dispatchBuild(buildId: string): Promise<void> {
         dispatched_at: nowIso,
         last_dispatch_attempt_at: nowIso,
         error_code: null,
+        generation_kind: isNewProject ? "initial" : "continuation",
       })
       .eq("id", buildId);
   } catch (err) {
@@ -604,7 +699,7 @@ export async function advanceBuild(buildId: string): Promise<void> {
       return;
     }
     await markBuildStuck(
-      buildId,
+      build,
       project,
       toSafeMessage(err, "The builder stopped responding while generating this change."),
     );
@@ -623,7 +718,7 @@ export async function advanceBuild(buildId: string): Promise<void> {
     const ageMs = Date.now() - build.startedAt.getTime();
     if (ageMs >= STUCK_THRESHOLD_MS) {
       await markBuildStuck(
-        buildId,
+        build,
         project,
         "The builder didn't finish generating this change in a reasonable time.",
       );
@@ -632,7 +727,33 @@ export async function advanceBuild(buildId: string): Promise<void> {
   }
 
   const succeeded = status.finishReason !== "error";
-  const creditsCost = status.usage ? usdToCredits(status.usage.totalCostUsd ?? 0) : null;
+
+  // Billed the instant this message resolves — deliberately BEFORE any
+  // branching on what happens next (repair retry, success, or provider-
+  // error failure). A v0 message that resolves but then triggers a repair
+  // retry used to have its cost silently dropped (this function would
+  // `return` from the repair branch below without ever billing the
+  // message that just resolved) — recording it here, unconditionally,
+  // closes that gap. Idempotent via recordProviderUsage's
+  // provider_reference unique constraint, so re-polling/re-advancing this
+  // same build (cron sweep + client poll can both call advanceBuild) can
+  // never double-charge this specific message.
+  if (status.usage) {
+    await recordProviderUsage({
+      projectId: build.projectId,
+      userId: project.ownerId,
+      buildId,
+      provider: "v0",
+      eventType:
+        build.repairAttempts > 0
+          ? "repair_generation"
+          : build.generationKind === "initial"
+            ? "initial_generation"
+            : "continuation_generation",
+      providerReference: `v0:${status.externalMessageId}`,
+      costUsd: status.usage.totalCostUsd ?? 0,
+    });
+  }
 
   // Spec: a project with an unconfigured integration still reaches a usable
   // preview — it just needs a visible nudge (dashboard/workspace status)
@@ -705,11 +826,16 @@ export async function advanceBuild(buildId: string): Promise<void> {
           });
 
           if (repairCostUsd !== null) {
-            await recordAnthropicUsage({
+            await recordProviderUsage({
               projectId: build.projectId,
               userId: project.ownerId,
               buildId: build.id,
-              eventType: "repair_generation",
+              provider: "anthropic",
+              eventType: "repair_prompt_generation",
+              // Keyed by attempt number (repairAttempts before increment)
+              // so each repair round's Sonnet call is billed separately —
+              // not collapsed into a single reference across attempts.
+              providerReference: `anthropic:repair_prompt_generation:${build.id}:${build.repairAttempts}`,
               costUsd: repairCostUsd,
             });
           }
@@ -754,7 +880,7 @@ export async function advanceBuild(buildId: string): Promise<void> {
           }
           console.error("Failed to send repair message for build", buildId, err);
           await markBuildStuck(
-            buildId,
+            build,
             project,
             toSafeMessage(err, "We found a styling problem but couldn't send the automatic fix. Please try again."),
           );
@@ -763,10 +889,10 @@ export async function advanceBuild(buildId: string): Promise<void> {
       }
 
       // Repair attempts exhausted — this must never be marked "succeeded".
-      // Credits are still charged for the real v0 usage this resolution
-      // incurred, same as any other terminal build (see the transaction
-      // below) — only the interim repair-triggering generations go
-      // unbilled, a deliberate, conservative simplification.
+      // The v0 usage for this final resolving message was already billed
+      // immediately upon resolution, above (same as every other message in
+      // this build's repair history) — nothing left to charge here, just
+      // the terminal state transition.
       await db.transaction(async (tx) => {
         await tx
           .update(builds)
@@ -776,7 +902,6 @@ export async function advanceBuild(buildId: string): Promise<void> {
             errorMessage:
               "We generated this site, but automated checks found the styling didn't load correctly, and automatic repair attempts didn't resolve it. Your project and its code are preserved — try describing the specific visual problem, or contact support.",
             validationError: validation.diagnosticDetail ?? validation.reason ?? null,
-            creditsCost,
             finishedAt: new Date(),
           })
           .where(eq(builds.id, buildId));
@@ -785,32 +910,6 @@ export async function advanceBuild(buildId: string): Promise<void> {
           .update(projects)
           .set({ status: "failed", lastActivityAt: new Date() })
           .where(eq(projects.id, build.projectId));
-
-        if (creditsCost !== null) {
-          await tx.insert(usageEvents).values({
-            projectId: build.projectId,
-            userId: project.ownerId,
-            buildId: build.id,
-            creditsCost,
-            eventType: "build_generation",
-          });
-
-          const [{ balance } = { balance: 0 }] = await tx
-            .select({ balance: creditLedger.balanceAfter })
-            .from(creditLedger)
-            .where(eq(creditLedger.userId, project.ownerId))
-            .orderBy(desc(creditLedger.createdAt))
-            .limit(1);
-
-          await tx.insert(creditLedger).values({
-            userId: project.ownerId,
-            projectId: build.projectId,
-            delta: -creditsCost,
-            balanceAfter: balance - creditsCost,
-            reason: "build_debit",
-            referenceId: build.id,
-          });
-        }
       });
 
       await notifyUser({
@@ -824,6 +923,9 @@ export async function advanceBuild(buildId: string): Promise<void> {
     }
   }
 
+  // The v0 usage for this resolving message was already billed
+  // immediately upon resolution, above — this transaction only handles
+  // the terminal state transition, never a second charge.
   await db.transaction(async (tx) => {
     await tx
       .update(builds)
@@ -832,7 +934,6 @@ export async function advanceBuild(buildId: string): Promise<void> {
         errorMessage: succeeded
           ? null
           : "The builder reported an error while generating this change.",
-        creditsCost,
         finishedAt: new Date(),
       })
       .where(eq(builds.id, buildId));
@@ -858,32 +959,6 @@ export async function advanceBuild(buildId: string): Promise<void> {
         ...(previewUrl ? { previewUrl } : {}),
       })
       .where(eq(projects.id, build.projectId));
-
-    if (creditsCost !== null) {
-      await tx.insert(usageEvents).values({
-        projectId: build.projectId,
-        userId: project.ownerId,
-        buildId: build.id,
-        creditsCost,
-        eventType: "build_generation",
-      });
-
-      const [{ balance } = { balance: 0 }] = await tx
-        .select({ balance: creditLedger.balanceAfter })
-        .from(creditLedger)
-        .where(eq(creditLedger.userId, project.ownerId))
-        .orderBy(desc(creditLedger.createdAt))
-        .limit(1);
-
-      await tx.insert(creditLedger).values({
-        userId: project.ownerId,
-        projectId: build.projectId,
-        delta: -creditsCost,
-        balanceAfter: balance - creditsCost,
-        reason: "build_debit",
-        referenceId: build.id,
-      });
-    }
   });
 
   // Thumbnail capture is deliberately deferred and decoupled from the
