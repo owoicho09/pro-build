@@ -24,6 +24,9 @@ import { captureAndStoreScreenshot } from "@/lib/services/screenshot";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { MAX_CONCURRENT_BUILDS, MAX_DISPATCH_ATTEMPTS } from "@/lib/config/concurrency";
 import { validateRenderedStyling } from "@/lib/services/build-validation";
+import { callAnthropic } from "@/lib/services/anthropic-client";
+import { REPAIR_MODEL } from "@/lib/config/models";
+import { planBuildRequest, buildPromptFromPlan, isComplexFollowUp } from "@/lib/services/planner";
 
 // Bounds the automatic "fix your own styling/runtime bug" loop (spec: "Use
 // bounded retries only, e.g. max 2 repair attempts") — see the validation
@@ -222,19 +225,114 @@ export async function startOrContinueBuild(
 // isTerminalFinishReason; the HavenRock acceptance test live-caught this
 // second case: v0 returned finishReason: "tool-calls" with zero files/text
 // and never progressed further).
-// Sent as a normal continuation message on the SAME v0 chat (full context
-// of its own prior code) — deliberately scoped to "find and fix the exact
-// cause" rather than inviting a broader rewrite, per spec: "Do not blindly
-// rewrite the whole project or styling stack." Modeled on a real precedent:
-// a plain "find and fix that malformed class name" follow-up previously
-// resolved this exact class of error on a different project.
-function buildRepairPrompt(diagnosticDetail: string): string {
+// Fallback used whenever the Sonnet-generated version below isn't
+// available (missing ANTHROPIC_API_KEY, timeout, malformed response) — the
+// repair loop must never be blocked by that. This is the exact template
+// that already proved out live (see the class of bug it names): a plain
+// "find and fix that malformed class name" follow-up previously resolved
+// this same error shape on a different project.
+function staticRepairPrompt(diagnosticDetail: string): string {
   return `Automated validation found a styling/runtime problem with the current version of this site: it rendered without its styling system properly applied.
 
 Diagnostic detail captured from the live preview:
 "${diagnosticDetail}"
 
 Please find and fix the exact, smallest cause of this specific problem (for example: a malformed or concatenated Tailwind utility class, a missing CSS import, a broken PostCSS/Tailwind config, or an invalid import) without rewriting unrelated code, changing the design, or replacing the styling system.`;
+}
+
+const REPAIR_PROMPT_SYSTEM = `You are a senior frontend engineer writing a precise bug-fix instruction for an AI website builder. Given a validation error and the project's current source files, write ONE short, specific instruction telling the builder exactly what to fix. Name the exact file and the exact defect where possible. Do not propose a rewrite, a redesign, or any change beyond the smallest fix for this specific error. Respond with ONLY the instruction text — no preamble, no markdown.`;
+
+// Uses Sonnet 5 (not v0's own model) to turn a raw validation diagnostic
+// into a targeted repair instruction, grounded in the project's actual
+// current files (fetched fresh via the engine — never assumed). Real,
+// distinct value from a second model here: it can point at the specific
+// file/line, which the static template can't. Falls back to
+// staticRepairPrompt on any failure — this call is never allowed to block
+// the repair loop, tracked via the same "best-effort, degrade to today's
+// behavior" pattern used throughout this file.
+async function generateRepairPrompt(input: {
+  diagnosticDetail: string;
+  externalProjectId: string;
+  externalChatId: string;
+}): Promise<{ prompt: string; costUsd: number | null }> {
+  try {
+    const engine = getBuilderEngine();
+    const files = await engine.getFiles({
+      externalProjectId: input.externalProjectId,
+      externalChatId: input.externalChatId,
+    });
+    // Size-capped so a large project can't blow up cost/latency on a
+    // repair-prompt call — most generated projects here are ~4 files.
+    const filesSummary = files
+      .slice(0, 12)
+      .map((f) => `--- ${f.path} ---\n${f.content.slice(0, 4000)}`)
+      .join("\n\n");
+
+    const result = await callAnthropic({
+      model: REPAIR_MODEL,
+      system: REPAIR_PROMPT_SYSTEM,
+      userMessage: `Validation error:\n"${input.diagnosticDetail}"\n\nCurrent project files:\n\n${filesSummary}`,
+      // Sonnet 5 also runs adaptive thinking by default (see planner.ts's
+      // maxTokens comment for why this needs headroom beyond the visible
+      // output length).
+      maxTokens: 2048,
+    });
+
+    if (!result?.text.trim()) {
+      return { prompt: staticRepairPrompt(input.diagnosticDetail), costUsd: null };
+    }
+    return { prompt: result.text.trim(), costUsd: result.costUsd };
+  } catch (err) {
+    console.error("Failed to generate smart repair prompt, falling back to static template", err);
+    return { prompt: staticRepairPrompt(input.diagnosticDetail), costUsd: null };
+  }
+}
+
+// Bills a real Anthropic call (planning or a smart repair prompt) through
+// the exact same mechanism v0's own usage already uses — one unified
+// "Build Credits" abstraction regardless of which provider incurred the
+// cost (spec: "do not break the existing Build Credits abstraction").
+// Best-effort: a failure here is logged, never thrown — a credits-ledger
+// hiccup must never fail the build itself.
+async function recordAnthropicUsage(input: {
+  projectId: string;
+  userId: string;
+  buildId: string;
+  eventType: "planner_generation" | "repair_generation";
+  costUsd: number;
+}): Promise<void> {
+  const creditsCost = usdToCredits(input.costUsd);
+  if (creditsCost <= 0) return;
+  try {
+    await db.transaction(async (tx) => {
+      await tx.insert(usageEvents).values({
+        projectId: input.projectId,
+        userId: input.userId,
+        buildId: input.buildId,
+        provider: "anthropic",
+        creditsCost,
+        eventType: input.eventType,
+      });
+
+      const [{ balance } = { balance: 0 }] = await tx
+        .select({ balance: creditLedger.balanceAfter })
+        .from(creditLedger)
+        .where(eq(creditLedger.userId, input.userId))
+        .orderBy(desc(creditLedger.createdAt))
+        .limit(1);
+
+      await tx.insert(creditLedger).values({
+        userId: input.userId,
+        projectId: input.projectId,
+        delta: -creditsCost,
+        balanceAfter: balance - creditsCost,
+        reason: "build_debit",
+        referenceId: input.buildId,
+      });
+    });
+  } catch (err) {
+    console.error("Failed to record Anthropic usage", input.buildId, input.eventType, err);
+  }
 }
 
 async function markBuildStuck(
@@ -347,6 +445,34 @@ export async function dispatchBuild(buildId: string): Promise<void> {
       });
     }
 
+    // Planning: Fable 5.1 turns the raw request into a structured plan
+    // that's woven into the actual prompt v0 receives — v0 remains the
+    // sole executor (it's the only thing that can actually compile/preview/
+    // deploy here), this only changes what it's asked to do. New projects
+    // always plan; a follow-up only does when it doesn't look like a
+    // simple edit (see isComplexFollowUp) — the common small edit pays no
+    // extra latency/cost. Best-effort throughout: a missing
+    // ANTHROPIC_API_KEY or any failure here falls straight back to
+    // sending triggerMessage.content unchanged, today's exact behavior.
+    const isNewProject = !(project.v0_chat_id && project.v0_project_id);
+    let promptForBuilder = triggerMessage.content;
+    if (isNewProject || isComplexFollowUp(triggerMessage.content)) {
+      const planResult = await planBuildRequest({
+        prompt: triggerMessage.content,
+        isNewProject,
+      });
+      if (planResult) {
+        promptForBuilder = buildPromptFromPlan(triggerMessage.content, planResult.plan);
+        await recordAnthropicUsage({
+          projectId: project.id,
+          userId: project.owner_id,
+          buildId,
+          eventType: "planner_generation",
+          costUsd: planResult.costUsd,
+        });
+      }
+    }
+
     const engine = getBuilderEngine();
     const handle =
       project.v0_chat_id && project.v0_project_id
@@ -355,12 +481,12 @@ export async function dispatchBuild(buildId: string): Promise<void> {
               externalProjectId: project.v0_project_id,
               externalChatId: project.v0_chat_id,
             },
-            prompt: triggerMessage.content,
+            prompt: promptForBuilder,
             attachments: builderAttachments,
           })
         : await engine.startProject({
             name: project.name,
-            prompt: triggerMessage.content,
+            prompt: promptForBuilder,
             attachments: builderAttachments,
           });
 
@@ -571,9 +697,26 @@ export async function advanceBuild(buildId: string): Promise<void> {
     if (!validation.passed) {
       if (build.repairAttempts < MAX_REPAIR_ATTEMPTS) {
         try {
+          const diagnostic = validation.diagnosticDetail ?? validation.reason ?? "unknown styling failure";
+          const { prompt: repairPrompt, costUsd: repairCostUsd } = await generateRepairPrompt({
+            diagnosticDetail: diagnostic,
+            externalProjectId: project.v0ProjectId,
+            externalChatId: project.v0ChatId,
+          });
+
+          if (repairCostUsd !== null) {
+            await recordAnthropicUsage({
+              projectId: build.projectId,
+              userId: project.ownerId,
+              buildId: build.id,
+              eventType: "repair_generation",
+              costUsd: repairCostUsd,
+            });
+          }
+
           const repairHandle = await engine.continueProject({
             ref: { externalProjectId: project.v0ProjectId, externalChatId: project.v0ChatId },
-            prompt: buildRepairPrompt(validation.diagnosticDetail ?? validation.reason ?? "unknown styling failure"),
+            prompt: repairPrompt,
           });
 
           if (status.assistantText) {
@@ -597,7 +740,7 @@ export async function advanceBuild(buildId: string): Promise<void> {
               state: "streaming",
               v0MessageId: repairHandle.externalMessageId,
               repairAttempts: build.repairAttempts + 1,
-              validationError: validation.diagnosticDetail ?? validation.reason ?? null,
+              validationError: diagnostic,
             })
             .where(eq(builds.id, buildId));
         } catch (err) {

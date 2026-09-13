@@ -1,0 +1,167 @@
+Switch proBuild to a planner/executor model architecture.
+
+Goal:
+
+- Claude Fable 5.1 = planning/reasoning
+- Claude Sonnet 5 = implementation/execution
+- Preserve the current v0/Vercel build, preview and deployment architecture unless inspection proves it must change.
+
+Do NOT rewrite the builder blindly.
+
+First inspect:
+- current v0-sdk usage
+- whether v0 currently accepts/selects an underlying model
+- where generation prompts are created
+- where continuation/edit prompts are created
+- where repair prompts are created
+- current LLM/provider abstractions if any
+
+Use the real current API/model identifiers:
+- planner: claude-fable-5-1
+- executor: claude-sonnet-5
+
+Architecture:
+
+NEW PROJECT / COMPLEX REQUEST
+
+User request
+→ Fable 5.1 planner
+→ structured implementation plan
+→ Sonnet 5 executor
+→ existing build/runtime flow
+→ validation gate
+→ preview
+
+SIMPLE FOLLOW-UP EDIT
+
+Examples:
+- change button text
+- change colors
+- add one section
+- replace image
+- small copy edit
+
+Route directly to Sonnet 5 without Fable planning.
+
+COMPLEX FOLLOW-UP
+
+Examples:
+- major redesign
+- new application feature
+- authentication
+- database changes
+- payment integration
+- architecture changes
+
+Fable 5.1 plan
+→ Sonnet 5 execution.
+
+VALIDATION FAILURE
+
+First repair attempt:
+Sonnet 5
+
+Second repair attempt:
+Sonnet 5
+
+If failure appears systemic/architectural after bounded Sonnet repairs:
+Fable 5.1 diagnoses the root cause
+→ produce a targeted repair plan
+→ Sonnet 5 executes the repair
+
+Do not let Fable perform normal implementation unless there is a clear reason.
+
+PLANNER OUTPUT
+
+Do not pass an uncontrolled essay from Fable into Sonnet.
+
+Create a structured plan containing fields such as:
+
+{
+  goal,
+  projectType,
+  requirements,
+  existingProjectConstraints,
+  designDirection,
+  filesOrAreasToModify,
+  implementationSteps,
+  integrations,
+  risks,
+  validationRequirements
+}
+
+Adapt this schema to the actual codebase.
+
+The executor should receive:
+- original user request
+- relevant existing project context
+- structured planner output
+- current proBuild generation rules
+- validation requirements
+
+MODEL ROUTING
+
+Create one centralized model/router configuration rather than hardcoding model names throughout the codebase.
+
+Example conceptual values:
+
+PLANNER_MODEL=claude-fable-5-1
+EXECUTOR_MODEL=claude-sonnet-5
+
+Store API credentials in env only.
+
+Do not expose model names unnecessarily in the customer-facing UI.
+
+COST / USAGE
+
+Track planner and executor usage separately in the existing usage ledger if possible.
+
+A build should allow us internally to know:
+- planner model
+- planner cost/usage
+- executor model
+- executor cost/usage
+- repair usage
+
+Do not break the existing Build Credits abstraction.
+
+IMPORTANT
+
+If the current v0 Platform API does not allow us to choose Sonnet 5 as its execution model, do NOT fake this architecture.
+
+Report that clearly.
+
+In that case, determine the cleanest supported architecture:
+- Fable does planning externally
+- structured plan is passed into the existing v0 builder
+OR
+- Sonnet executes directly only if doing so does not require replacing the entire working v0 runtime
+
+Preserve:
+- project persistence
+- continuation
+- previews
+- validation gate
+- repair loop
+- deployment
+- credits
+- queue/concurrency
+- attachments
+- public publishing
+
+Do not touch unrelated working systems.
+
+Before implementing, report:
+1. How models are currently selected.
+2. Whether v0 exposes model selection in the installed SDK.
+3. Where Fable and Sonnet can actually fit without breaking the current architecture.
+
+Then implement the safest supported version.
+
+Afterward test:
+- one brand-new project
+- one simple direct Sonnet follow-up
+- one complex Fable→Sonnet request
+- one validation repair path
+
+Report actual model used for each test and usage/cost if available.

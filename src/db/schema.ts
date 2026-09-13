@@ -77,6 +77,12 @@ export const integrationStatusEnum = pgEnum("integration_status", [
 export const usageEventTypeEnum = pgEnum("usage_event_type", [
   "build_generation",
   "manual_adjustment",
+  // Real Anthropic API calls in the planner/repair pipeline (see
+  // planner.ts, build-orchestrator.ts's generateRepairPrompt) — billed
+  // through the same Build Credits ledger as v0's own usage, distinguished
+  // by `provider: "anthropic"` + one of these two event types.
+  "planner_generation",
+  "repair_generation",
 ]);
 
 export const ledgerReasonEnum = pgEnum("ledger_reason", [

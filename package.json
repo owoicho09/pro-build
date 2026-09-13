@@ -12,6 +12,7 @@
     "db:migrate": "tsx --env-file=.env.local src/db/migrate.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.125.0",
     "@sparticuz/chromium": "^153.0.0",
     "@supabase/ssr": "^0.12.6",
     "@supabase/supabase-js": "^2.115.0",
