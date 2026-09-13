@@ -11,7 +11,20 @@ import { NextResponse, type NextRequest } from "next/server";
 // URL that doesn't exist at all — redirecting anonymous visitors to
 // /login here instead would leak exactly that. Let the page's own check
 // be the sole gate for this one route.
-const PUBLIC_PATHS = ["/", "/login", "/signup", "/auth", "/templates", "/admin"];
+const PUBLIC_PATHS = [
+  "/",
+  "/login",
+  "/signup",
+  "/auth",
+  "/templates",
+  "/admin",
+  // Must be reachable while signed OUT — that's the entire point of a
+  // password reset flow. Missing from this list meant every visit
+  // bounced straight back to /login before the page ever rendered,
+  // which looked like the "Forgot password?" link did nothing at all.
+  "/forgot-password",
+  "/reset-password",
+];
 
 function isPublicPath(pathname: string) {
   return PUBLIC_PATHS.some(
