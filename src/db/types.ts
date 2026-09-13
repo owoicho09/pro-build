@@ -254,7 +254,7 @@ export interface Database {
           monthly_credits: number;
           project_limit: number;
           rate_limits: { builds_per_hour?: number } | null;
-          features: unknown;
+          features: { custom_domains?: boolean; attachments?: boolean; priority_support?: boolean } | null;
           active: boolean;
           paystack_plan_code: string | null;
         };

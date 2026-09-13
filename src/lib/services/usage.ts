@@ -20,22 +20,43 @@ export async function getCreditBalance(
   return data?.balance_after ?? 0;
 }
 
-async function getPlanForUser(supabase: SupabaseClient<Database>, userId: string) {
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("plan_id")
-    .eq("id", userId)
-    .single();
-
-  const planId = profile?.plan_id ?? "free";
-
-  const { data: plan } = await supabase
-    .from("plans")
-    .select("*")
-    .eq("id", planId)
-    .single();
-
+async function getPlanById(supabase: SupabaseClient<Database>, planId: string) {
+  const { data: plan } = await supabase.from("plans").select("*").eq("id", planId).single();
   return plan;
+}
+
+// The plan that actually governs a user's entitlements right now — not
+// necessarily profiles.plan_id (which is just "last plan a webhook set" and
+// never reflects a cancellation's grace period). Reads the latest
+// subscription row and applies the spec's grace rules:
+//  - "active": paid plan applies.
+//  - "past_due": a failed renewal must not immediately restrict anything
+//    (spec: "should NOT ... eventually be restricted" — restriction happens
+//    once Paystack itself gives up and sends subscription.disable).
+//  - "canceled" but still before current_period_end: the customer already
+//    paid for this period, so it stays paid until that date passes (spec:
+//    "retain paid access until the end of the already-paid billing period").
+// Anything else (no subscription row, canceled + period over) is Free —
+// computed at read time, so there's no separate downgrade job that can
+// drift out of sync.
+export async function getEffectivePlan(supabase: SupabaseClient<Database>, userId: string) {
+  const { data: subscription } = await supabase
+    .from("subscriptions")
+    .select("plan_id, status, current_period_end")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const stillPaid =
+    subscription?.status === "active" ||
+    subscription?.status === "past_due" ||
+    (subscription?.status === "canceled" &&
+      !!subscription.current_period_end &&
+      new Date(subscription.current_period_end) > new Date());
+
+  const planId = stillPaid && subscription ? subscription.plan_id : "free";
+  return getPlanById(supabase, planId);
 }
 
 // Checked once, right before starting a build (spec: credits/rate limits
@@ -54,7 +75,7 @@ export async function checkBuildAllowance(
     };
   }
 
-  const plan = await getPlanForUser(supabase, input.userId);
+  const plan = await getEffectivePlan(supabase, input.userId);
   const buildsPerHour = plan?.rate_limits?.builds_per_hour ?? DEFAULT_BUILDS_PER_HOUR;
 
   // Per-project, not per-user-across-all-projects — a deliberate V1
@@ -121,7 +142,7 @@ export async function checkProjectCapacity(
   supabase: SupabaseClient<Database>,
   userId: string,
 ): Promise<{ allowed: true } | { allowed: false; reason: string }> {
-  const plan = await getPlanForUser(supabase, userId);
+  const plan = await getEffectivePlan(supabase, userId);
   const limit = plan?.project_limit ?? 1;
 
   const { count } = await supabase

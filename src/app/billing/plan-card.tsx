@@ -33,17 +33,19 @@ export function PlanCard({
       <div>
         <h2 className="font-medium">{plan.name}</h2>
         <p className="text-2xl font-semibold">
-          {plan.price_cents === 0 ? "Free" : `$${(plan.price_cents / 100).toFixed(0)}`}
+          {plan.price_cents === 0 ? "Free" : `₦${(plan.price_cents / 100).toLocaleString()}`}
           {plan.price_cents > 0 && (
             <span className="text-sm font-normal text-muted-foreground">/mo</span>
           )}
         </p>
       </div>
       <ul className="flex-1 space-y-1 text-sm text-muted-foreground">
-        <li>{plan.monthly_credits.toLocaleString()} build credits / mo</li>
         <li>
           {plan.project_limit} project{plan.project_limit === 1 ? "" : "s"}
         </li>
+        <li>{plan.monthly_credits.toLocaleString()} Build Credits{plan.price_cents > 0 ? "/month" : " (one-time)"}</li>
+        <li>AI building, editing and publishing</li>
+        <li>{plan.features?.custom_domains ? "Custom domains" : "No custom domain"}</li>
         {plan.rate_limits?.builds_per_hour && (
           <li>{plan.rate_limits.builds_per_hour} builds/hour per project</li>
         )}

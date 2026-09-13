@@ -9,6 +9,7 @@ import {
   removeProjectDomain,
 } from "@/lib/services/vercel-api";
 import { toSafeMessage } from "@/lib/utils/external-provider-error";
+import { getEffectivePlan } from "@/lib/services/usage";
 
 type DomainRow = Database["public"]["Tables"]["domains"]["Row"];
 
@@ -62,6 +63,13 @@ export async function connectDomain(
   }
 
   const { vercelProjectId, ownerId } = await requireVercelProjectId(supabase, input.projectId);
+
+  const plan = await getEffectivePlan(supabase, ownerId);
+  if (!plan?.features?.custom_domains) {
+    throw new Error(
+      "Custom domains are available on the Builder and Pro plans — upgrade to connect a domain.",
+    );
+  }
 
   let result: { verified: boolean; verification: { type: string; domain: string; value: string }[] };
   try {

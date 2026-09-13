@@ -30,6 +30,22 @@ export async function startCheckout(
     throw new Error("This plan isn't available for checkout yet.");
   }
 
+  const { data: existing } = await supabase
+    .from("subscriptions")
+    .select("status")
+    .eq("user_id", user.id)
+    .in("status", ["active", "past_due"])
+    .limit(1)
+    .maybeSingle();
+
+  if (existing) {
+    // V1 doesn't support switching plans while a subscription is active —
+    // Paystack proration would need to be invented, which the spec
+    // explicitly says not to do. Cancel first, then re-subscribe once the
+    // current period ends.
+    throw new Error("You already have an active subscription. Cancel it before starting a new one.");
+  }
+
   const billing = getBillingProvider();
   const session = await billing.initializeSubscriptionCheckout({
     email: user.email,
@@ -121,6 +137,93 @@ async function resolveUserId(
   return profile?.id ?? null;
 }
 
+// A successful charge's own metadata only survives from the *first*
+// transaction.initialize call (see startCheckout's comment) — recurring
+// renewal charges won't carry it, so without this fallback chain a
+// renewal's charge.success would silently grant nothing (spec test #4
+// requires renewals to reset the allowance correctly). Falls back to the
+// plan_code Paystack sends on the charge itself, then to whatever plan the
+// user's own active subscription row already says.
+async function resolvePlanForCharge(
+  admin: ReturnType<typeof createAdminClient>,
+  userId: string,
+  data: PaystackEventData,
+): Promise<{ id: string; monthly_credits: number } | null> {
+  if (data.metadata?.planId) {
+    const { data: plan } = await admin
+      .from("plans")
+      .select("id, monthly_credits")
+      .eq("id", data.metadata.planId)
+      .maybeSingle();
+    if (plan) return plan;
+  }
+
+  const planCode = typeof data.plan === "string" ? data.plan : data.plan?.plan_code;
+  if (planCode) {
+    const { data: plan } = await admin
+      .from("plans")
+      .select("id, monthly_credits")
+      .eq("paystack_plan_code", planCode)
+      .maybeSingle();
+    if (plan) return plan;
+  }
+
+  const { data: subscription } = await admin
+    .from("subscriptions")
+    .select("plan_id")
+    .eq("user_id", userId)
+    .eq("status", "active")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!subscription) return null;
+
+  const { data: plan } = await admin
+    .from("plans")
+    .select("id, monthly_credits")
+    .eq("id", subscription.plan_id)
+    .maybeSingle();
+  return plan;
+}
+
+// Paystack doesn't guarantee charge.success and subscription.create arrive
+// in any particular order — entitlements must not depend on which comes
+// first. Called right after a verified charge resolves a paid plan, this
+// makes getEffectivePlan() correct immediately instead of waiting for
+// subscription.create: it reuses whatever row already represents this
+// activation (a genuinely live subscription — the renewal case — or an
+// unreconciled placeholder left by an earlier charge.success for the same
+// user) rather than ever inserting a second row. subscription.create below
+// is what fills in the canonical Paystack identifiers on that same row;
+// this function never touches them, so it can never race subscription.create
+// for ownership of the subscription_code.
+async function ensureSubscriptionForCharge(
+  admin: ReturnType<typeof createAdminClient>,
+  userId: string,
+  planId: string,
+): Promise<void> {
+  const { data: existing } = await admin
+    .from("subscriptions")
+    .select("id")
+    .eq("user_id", userId)
+    .or("paystack_subscription_code.is.null,status.in.(active,past_due)")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existing) {
+    await admin.from("subscriptions").update({ status: "active", plan_id: planId }).eq("id", existing.id);
+    return;
+  }
+
+  const { error } = await admin
+    .from("subscriptions")
+    .insert({ user_id: userId, plan_id: planId, status: "active" });
+  if (error) {
+    console.error("Failed to create placeholder subscription", userId, error);
+  }
+}
+
 export async function processPaystackWebhook(
   rawBody: string,
   signatureHeader: string | null,
@@ -165,27 +268,27 @@ export async function processPaystackWebhook(
         break;
       }
 
-      const planId = event.data.metadata?.planId;
-      if (planId) {
-        const { data: plan } = await admin
-          .from("plans")
-          .select("monthly_credits")
-          .eq("id", planId)
-          .single();
+      const plan = await resolvePlanForCharge(admin, userId, event.data);
+      if (plan) {
+        // Reset, not accumulate — spec: "monthly subscription allowance
+        // BECOMES 1,000 credits" each cycle, unused allowance does not roll
+        // over. Applied uniformly to the first activation charge and every
+        // renewal charge, so a plan switch or repeated charge.success can
+        // never stack multiple full allowances (each charge does exactly
+        // one reset, and the transaction insert above already guarantees
+        // this whole block only ever runs once per unique reference).
+        const balance = await getCreditBalance(admin, userId);
+        const newBalance = plan.monthly_credits;
+        await admin.from("credit_ledger").insert({
+          user_id: userId,
+          delta: newBalance - balance,
+          balance_after: newBalance,
+          reason: "monthly_grant",
+          reference_id: event.data.reference,
+        });
 
-        if (plan) {
-          const balance = await getCreditBalance(admin, userId);
-          const newBalance = balance + plan.monthly_credits;
-          await admin.from("credit_ledger").insert({
-            user_id: userId,
-            delta: plan.monthly_credits,
-            balance_after: newBalance,
-            reason: "monthly_grant",
-            reference_id: event.data.reference,
-          });
-        }
-
-        await admin.from("profiles").update({ plan_id: planId }).eq("id", userId);
+        await admin.from("profiles").update({ plan_id: plan.id }).eq("id", userId);
+        await ensureSubscriptionForCharge(admin, userId, plan.id);
       }
       break;
     }
@@ -198,15 +301,52 @@ export async function processPaystackWebhook(
       const { data: plan } = planCode
         ? await admin.from("plans").select("id").eq("paystack_plan_code", planCode).maybeSingle()
         : { data: null };
+      const resolvedPlanId = plan?.id ?? event.data.metadata?.planId ?? "free";
 
-      await admin.from("subscriptions").insert({
+      // If charge.success for this same activation already arrived first,
+      // ensureSubscriptionForCharge above left an unreconciled placeholder
+      // (active, no subscription_code yet) — attach the canonical Paystack
+      // identifiers to that same row instead of inserting a second one.
+      const { data: placeholder } = await admin
+        .from("subscriptions")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("status", "active")
+        .is("paystack_subscription_code", null)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (placeholder) {
+        await admin
+          .from("subscriptions")
+          .update({
+            plan_id: resolvedPlanId,
+            status: "active",
+            paystack_subscription_code: event.data.subscription_code,
+            paystack_email_token: event.data.email_token ?? null,
+            current_period_end: event.data.next_payment_date ?? null,
+          })
+          .eq("id", placeholder.id);
+        break;
+      }
+
+      const { error: subscriptionInsertError } = await admin.from("subscriptions").insert({
         user_id: userId,
-        plan_id: plan?.id ?? event.data.metadata?.planId ?? "free",
+        plan_id: resolvedPlanId,
         status: "active",
         paystack_subscription_code: event.data.subscription_code,
         paystack_email_token: event.data.email_token ?? null,
         current_period_end: event.data.next_payment_date ?? null,
       });
+
+      // Unique violation on paystack_subscription_code = this redelivery
+      // already created/reconciled the row — same idempotency pattern as
+      // charge.success above, guarding against Paystack's own webhook
+      // retries.
+      if (subscriptionInsertError && subscriptionInsertError.code !== "23505") {
+        console.error("Failed to record subscription", event.data.subscription_code, subscriptionInsertError);
+      }
       break;
     }
 

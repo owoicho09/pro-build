@@ -195,11 +195,43 @@ export default async function AdminPage({
               </div>
               <div>
                 <dt className="text-muted-foreground">Latest preview URL</dt>
-                <dd className="truncate">{projectDiagnostics.preview_url ?? "—"}</dd>
+                <dd className="truncate">
+                  {projectDiagnostics.preview_url ? (
+                    <>
+                      {projectDiagnostics.preview_url}{" "}
+                      <a
+                        href={projectDiagnostics.preview_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="whitespace-nowrap text-brand hover:underline"
+                      >
+                        Open Preview ↗
+                      </a>
+                    </>
+                  ) : (
+                    "—"
+                  )}
+                </dd>
               </div>
               <div>
                 <dt className="text-muted-foreground">Production URL</dt>
-                <dd className="truncate">{projectDiagnostics.production_url ?? "—"}</dd>
+                <dd className="truncate">
+                  {projectDiagnostics.production_url ? (
+                    <>
+                      {projectDiagnostics.production_url}{" "}
+                      <a
+                        href={projectDiagnostics.production_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="whitespace-nowrap text-brand hover:underline"
+                      >
+                        Open Live Site ↗
+                      </a>
+                    </>
+                  ) : (
+                    "—"
+                  )}
+                </dd>
               </div>
               <div className="sm:col-span-2">
                 <dt className="text-muted-foreground">Latest error</dt>
@@ -308,17 +340,44 @@ export default async function AdminPage({
                 <th className="pb-2 pr-4">Name</th>
                 <th className="pb-2 pr-4">Owner</th>
                 <th className="pb-2 pr-4">Status</th>
-                <th className="pb-2 pr-4">Production URL</th>
+                <th className="pb-2 pr-4">Actions</th>
                 <th className="pb-2">Last activity</th>
               </tr>
             </thead>
             <tbody>
               {projects.map((p) => (
                 <tr key={p.id} className="border-t border-border">
-                  <td className="py-2 pr-4">{p.name}</td>
+                  <td className="py-2 pr-4">
+                    <a href={`/admin?project=${p.id}`} className="hover:underline">
+                      {p.name}
+                    </a>
+                  </td>
                   <td className="py-2 pr-4">{p.owner_email}</td>
                   <td className="py-2 pr-4">{p.status}</td>
-                  <td className="py-2 pr-4">{p.production_url ?? "—"}</td>
+                  <td className="py-2 pr-4 space-x-3">
+                    {p.preview_url ? (
+                      <a
+                        href={p.preview_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-brand hover:underline"
+                      >
+                        Open Preview
+                      </a>
+                    ) : (
+                      <span className="text-muted-foreground">No preview</span>
+                    )}
+                    {p.production_url && (
+                      <a
+                        href={p.production_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-brand hover:underline"
+                      >
+                        Open Live Site
+                      </a>
+                    )}
+                  </td>
                   <td className="py-2">{fmtDate(p.last_activity_at)}</td>
                 </tr>
               ))}
@@ -358,6 +417,9 @@ export default async function AdminPage({
                 <th className="pb-2 pr-4">Email</th>
                 <th className="pb-2 pr-4">Plan</th>
                 <th className="pb-2 pr-4">Status</th>
+                <th className="pb-2 pr-4">Monthly grant</th>
+                <th className="pb-2 pr-4">Last payment</th>
+                <th className="pb-2 pr-4">Paystack subscription</th>
                 <th className="pb-2 pr-4">Cancels at period end</th>
                 <th className="pb-2">Current period end</th>
               </tr>
@@ -368,6 +430,15 @@ export default async function AdminPage({
                   <td className="py-2 pr-4">{s.email}</td>
                   <td className="py-2 pr-4">{s.plan_id}</td>
                   <td className="py-2 pr-4">{s.status}</td>
+                  <td className="py-2 pr-4">{s.monthly_credits?.toLocaleString() ?? "—"}</td>
+                  <td className="py-2 pr-4">
+                    {s.last_payment_amount_cents != null
+                      ? `₦${(s.last_payment_amount_cents / 100).toLocaleString()} (${fmtDate(s.last_payment_at)})`
+                      : "—"}
+                  </td>
+                  <td className="py-2 pr-4 font-mono text-[11px]">
+                    {s.paystack_subscription_code ?? "—"}
+                  </td>
                   <td className="py-2 pr-4">{s.cancel_at_period_end ? "yes" : "no"}</td>
                   <td className="py-2">{fmtDate(s.current_period_end)}</td>
                 </tr>

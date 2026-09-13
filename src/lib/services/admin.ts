@@ -23,6 +23,7 @@ export type AdminProjectRow = {
   id: string;
   name: string;
   status: string;
+  preview_url: string | null;
   production_url: string | null;
   last_activity_at: string;
   owner_email: string;
@@ -44,6 +45,10 @@ export type AdminSubscriptionRow = {
   cancel_at_period_end: boolean;
   current_period_end: string | null;
   email: string;
+  paystack_subscription_code: string | null;
+  monthly_credits: number | null;
+  last_payment_amount_cents: number | null;
+  last_payment_at: string | null;
 }
 
 export type AdminUsageSummary = {
@@ -123,7 +128,7 @@ export async function getAdminUsers(): Promise<AdminUserRow[]> {
 
 export async function getAdminProjects(): Promise<AdminProjectRow[]> {
   const result = await db.execute<AdminProjectRow>(sql`
-    select pr.id, pr.name, pr.status, pr.production_url, pr.last_activity_at,
+    select pr.id, pr.name, pr.status, pr.preview_url, pr.production_url, pr.last_activity_at,
       u.email as owner_email
     from projects pr
     join auth.users u on u.id = pr.owner_id
@@ -270,9 +275,19 @@ export async function getAdminDeployments(): Promise<AdminDeploymentRow[]> {
 export async function getAdminSubscriptions(): Promise<AdminSubscriptionRow[]> {
   const result = await db.execute<AdminSubscriptionRow>(sql`
     select s.id, s.status, s.plan_id, s.cancel_at_period_end, s.current_period_end,
-      u.email
+      s.paystack_subscription_code, pl.monthly_credits,
+      u.email,
+      lt.amount_cents as last_payment_amount_cents, lt.created_at as last_payment_at
     from subscriptions s
     join auth.users u on u.id = s.user_id
+    left join plans pl on pl.id = s.plan_id
+    left join lateral (
+      select amount_cents, created_at
+      from transactions t
+      where t.user_id = s.user_id and t.status = 'succeeded'
+      order by t.created_at desc
+      limit 1
+    ) lt on true
     order by s.created_at desc
     limit 50
   `);

@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "subscriptions_paystack_subscription_code_idx" ON "subscriptions" USING btree ("paystack_subscription_code");

@@ -41,13 +41,37 @@ export default async function BillingPage({
 
   const balance = await getCreditBalance(supabase, user.id);
 
+  const { count: projectCount } = await supabase
+    .from("projects")
+    .select("id", { count: "exact", head: true })
+    .eq("owner_id", user.id);
+
+  const currentPlan = (plans ?? []).find((p) => p.id === profile?.plan_id);
+
+  let statusLine: string | null = null;
+  if (subscription?.status === "active" && subscription.cancel_at_period_end) {
+    statusLine = subscription.current_period_end
+      ? `Canceling — access continues until ${new Date(subscription.current_period_end).toLocaleDateString()}.`
+      : "Canceling at the end of the current billing period.";
+  } else if (subscription?.status === "past_due") {
+    statusLine = "Your last payment failed — update your payment method to keep your plan active.";
+  } else if (subscription?.status === "active" && subscription.current_period_end) {
+    statusLine = `Renews ${new Date(subscription.current_period_end).toLocaleDateString()}.`;
+  }
+
   return (
     <AppShell>
       <div className="mx-auto max-w-4xl px-6 py-10">
         <h1 className="text-2xl font-semibold">Billing</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          {balance.toLocaleString()} build credits remaining.
+          Build, publish and continuously improve your websites with AI.
         </p>
+        <p className="mt-3 text-sm text-muted-foreground">
+          {currentPlan?.name ?? "Free"} plan · {projectCount ?? 0} / {currentPlan?.project_limit ?? 1}{" "}
+          project{(currentPlan?.project_limit ?? 1) === 1 ? "" : "s"} · {balance.toLocaleString()} build
+          credits remaining
+        </p>
+        {statusLine && <p className="mt-1 text-sm text-muted-foreground">{statusLine}</p>}
 
         {checkout === "complete" && (
           <div className="mt-4 rounded-lg border border-border bg-card p-4 text-sm">

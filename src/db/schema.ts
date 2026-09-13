@@ -609,26 +609,41 @@ export const plans = pgTable("plans", {
   paystackPlanCode: text("paystack_plan_code"),
 });
 
-export const subscriptions = pgTable("subscriptions", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => profiles.id, { onDelete: "cascade" }),
-  planId: text("plan_id")
-    .notNull()
-    .references(() => plans.id),
-  status: subscriptionStatusEnum("status").notNull().default("active"),
-  paystackSubscriptionCode: text("paystack_subscription_code"),
-  // Required by Paystack's disable-subscription call alongside the
-  // subscription code — captured from the `subscription.create` webhook,
-  // there is no other way to fetch it after the fact.
-  paystackEmailToken: text("paystack_email_token"),
-  currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
-  cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const subscriptions = pgTable(
+  "subscriptions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => profiles.id, { onDelete: "cascade" }),
+    planId: text("plan_id")
+      .notNull()
+      .references(() => plans.id),
+    status: subscriptionStatusEnum("status").notNull().default("active"),
+    paystackSubscriptionCode: text("paystack_subscription_code"),
+    // Required by Paystack's disable-subscription call alongside the
+    // subscription code — captured from the `subscription.create` webhook,
+    // there is no other way to fetch it after the fact.
+    paystackEmailToken: text("paystack_email_token"),
+    currentPeriodEnd: timestamp("current_period_end", { withTimezone: true }),
+    cancelAtPeriodEnd: boolean("cancel_at_period_end").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // The `subscription.create` webhook can be redelivered by Paystack —
+    // this is the idempotency guarantee (same pattern as
+    // transactions_provider_reference_idx) that a retry can never create a
+    // second subscription row for the same underlying Paystack subscription.
+    // Always populated on insert (the handler bails out before inserting if
+    // `subscription_code` is missing), so a plain unique index — not a
+    // partial one — matches the codebase's own established pattern here.
+    uniqueIndex("subscriptions_paystack_subscription_code_idx").on(
+      table.paystackSubscriptionCode,
+    ),
+  ],
+);
 
 export const transactions = pgTable(
   "transactions",
